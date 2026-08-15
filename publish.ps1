@@ -1,4 +1,4 @@
-# publish.ps1 — 一键发布官方 dshdesktop-client 插件到公共 npm。
+﻿# publish.ps1 — 一键发布官方 dshdesktop-client 插件到公共 npm。
 #
 # 用途：把本仓库（@dshd/dshdesktop-client）发布为公开包，
 #       之后 DSH Desktop 首次启动会自动 dsh plugin add 它，设置按钮上方即出现市场按钮。
