@@ -1,0 +1,40 @@
+{
+  "name": "@dshd/dshdesktop-client",
+  "version": "0.1.1",
+  "description": "DSH Desktop client 插件（sidebar.footer.action 市场入口 + settings.section 环境检查与设置）。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "marketplace"
+  ],
+  "dependencies": {},
+  "peerDependencies": {
+    "@deepseek-ai/dsh-client-runtime": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.6"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
