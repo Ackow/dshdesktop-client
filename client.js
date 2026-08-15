@@ -309,7 +309,7 @@ window.__ModuleLoader__.load({
         ['归档', p.archived ? '是' : '否'],
       ]
       return el('aside', {
-        style: { display: 'flex', flexDirection: 'column', gap: '8px', minWidth: '0', minHeight: '0', flex: '0 0 280px', overflowY: 'auto', borderLeft: '1px solid var(--dsw-alias-border-default, #e8e8e8)', paddingLeft: '16px' },
+        style: { display: 'flex', flexDirection: 'column', gap: '8px', minWidth: '0', minHeight: '0', flex: '0 0 280px', overflowY: 'auto', borderLeft: '1px solid var(--dsw-alias-border-default, #e8e8e8)', paddingLeft: '16px', animation: 'dshd-detail-in 180ms ease' },
       }, [
         el('div', { key: 'head', style: { display: 'flex', alignItems: 'center', gap: '8px' } }, [
           el('button', { key: 'b', type: 'button', onClick: props.onBack, style: BTN }, '← 返回'),
@@ -333,7 +333,9 @@ window.__ModuleLoader__.load({
                 el('span', { key: 'act', style: Object.assign({}, PILL, { marginTop: '0' }, props.installed.enabled ? { color: '#1f9d55' } : { color: '#b45409' }) }, props.installed.enabled ? '已启用' : '已禁用'),
                 el('span', { key: 'actm', style: Object.assign({}, PILL, { marginTop: '0' }) }, props.installed.activation === 'bundle' ? 'bundle 启动' : props.installed.activation === 'client-patch' ? 'client patch' : '未激活'),
                 el('button', { key: 'tgl', type: 'button', disabled: props.busy, onClick: function () { props.onToggle(props.installed.name, !props.installed.enabled) }, style: BTN }, props.installed.enabled ? '禁用' : '启用'),
-                el('button', { key: 'rm', type: 'button', disabled: props.busy, onClick: function () { props.onRemove(props.installed.name) }, style: Object.assign({}, BTN, { color: '#b45409' }) }, '移除'),
+                props.installed.protected
+                  ? el('span', { key: 'builtin', style: Object.assign({}, PILL, { marginTop: '0', color: '#4d6bfe', borderColor: 'rgba(77,107,254,.4)' }) }, '内置插件')
+                  : el('button', { key: 'rm', type: 'button', disabled: props.busy, onClick: function () { props.onRemove(props.installed.name) }, style: Object.assign({}, BTN, { color: '#b45409' }) }, '移除'),
               ]
             : [
                 el('input', { key: 'pkg', type: 'text', value: props.installPkg, placeholder: 'dsh plugin --profile web add <包名>',
@@ -377,13 +379,22 @@ window.__ModuleLoader__.load({
         upd && upd.hasUpdate ? el('span', { key: 'upd', style: Object.assign({}, PILL, { color: '#b45409', borderColor: 'rgba(180,84,9,.45)' }) },
           '有更新 v' + upd.latest) : null,
         upd && upd.hasUpdate ? el('button', { key: 'u', type: 'button', disabled: props.busy, onClick: function () { props.onUpdate(p.name) }, style: Object.assign({}, BTN, { color: '#1f9d55' }) }, '更新') : null,
-        // A package with no dsh.bundle/dsh.client marker cannot be activated by
-        // dsh — show a muted disabled button with a hint instead of a button
-        // that errors on click.
-        (!p.enabled && !p.activation)
-          ? el('span', { key: 'nodsh', title: '该包没有 dsh.bundle/dsh.client 标记，dsh 无法激活它', style: Object.assign({}, MUTED, { fontSize: '11px' }) }, '无 dsh 标记，无法启用')
-          : el('button', { key: 'tgl', type: 'button', disabled: props.busy, onClick: function () { props.onToggle(p.name, !p.enabled) }, style: BTN }, p.enabled ? '禁用' : '启用'),
-        el('button', { key: 'rm', type: 'button', disabled: props.busy, onClick: function () { props.onRemove(p.name) }, style: Object.assign({}, BTN, { color: '#b45409' }) }, '移除'),
+        // Built-in DSH Desktop plugins (protected) get NO operations at all —
+        // they cannot be disabled or removed (disabling would drop the client
+        // patch and break the whole panel). Show the built-in badge only.
+        p.protected
+          ? el('span', { key: 'builtin', style: Object.assign({}, PILL, { color: '#4d6bfe', borderColor: 'rgba(77,107,254,.4)' }) }, '内置')
+          : [
+              // A package with no dsh.bundle/dsh.client marker cannot be
+              // activated by dsh — show a muted hint instead of a button that
+              // errors. (canActivate, not activation: activation is the CURRENT
+              // snapshot, empty when disabled — a disabled-but-marker plugin
+              // must still show the enable button.)
+              (!p.enabled && !p.canActivate)
+                ? el('span', { key: 'nodsh', title: '该包没有 dsh.bundle/dsh.client 标记，dsh 无法激活它', style: Object.assign({}, MUTED, { fontSize: '11px' }) }, '无 dsh 标记，无法启用')
+                : el('button', { key: 'tgl', type: 'button', disabled: props.busy, onClick: function () { props.onToggle(p.name, !p.enabled) }, style: BTN }, p.enabled ? '禁用' : '启用'),
+              el('button', { key: 'rm', type: 'button', disabled: props.busy, onClick: function () { props.onRemove(p.name) }, style: Object.assign({}, BTN, { color: '#b45409' }) }, '移除'),
+            ],
       ])
     }
 
@@ -410,7 +421,8 @@ window.__ModuleLoader__.load({
       var [busy, setBusy] = useState(false)
       var [installPkg, setInstallPkg] = useState('')
       var [opMsg, setOpMsg] = useState('')
-      var [viewTab, setViewTab] = useState('discover')
+      var [viewTab, setViewTab] = useState('featured')
+      var [featured, setFeatured] = useState(null)  // {plugins, errors} from the curated seed catalog
       var [installProg, setInstallProg] = useState(null) // {package, phase, resolved, added, message}
       var lastActRef = useRef(null)   // ms timestamp of last progress change
       var [staleSec, setStaleSec] = useState(0)
@@ -461,7 +473,14 @@ window.__ModuleLoader__.load({
           if (r && r.ok && Array.isArray(r.plugins)) setInstalled(r.plugins)
         })
       }
-      useEffect(function () { load(false); loadInstalled() }, [])
+      function loadFeatured() {
+        // Always re-fetch: the featured list is remote-first, so a maintainer's
+        // repo update shows on the next open.
+        bridgeCall('seed').then(function (r) {
+          setFeatured(r || { plugins: [], errors: [] })
+        })
+      }
+      useEffect(function () { load(false); loadInstalled(); loadFeatured() }, [])
 
       // Reopening the market while an install is still running in the background
       // (panel was closed mid-download): pick up the live progress and resume
@@ -582,6 +601,16 @@ window.__ModuleLoader__.load({
       }
 
       var plugins = (state && state.plugins) || []
+      // Featured rows: the local featured.json only lists `repo` (config), so
+      // merge each entry with the fuller discovery data (stars/license/tags…)
+      // when that repo is present in the discovery results — the card then
+      // shows the same rich content as the 发现 tab.
+      var featuredRows = (featured && featured.plugins || []).map(function (fp) {
+        for (var i = 0; i < plugins.length; i++) {
+          if (plugins[i].repository === fp.repository) return Object.assign({}, fp, plugins[i])
+        }
+        return fp
+      })
       var q = search.trim().toLowerCase()
       var rows = plugins.filter(function (p) {
         if (installedFor(p.repository)) return false  // installed plugins move to the 已安装 tab
@@ -590,7 +619,14 @@ window.__ModuleLoader__.load({
         return hay.indexOf(q) >= 0
       })
       var errs = (state && state.errors) || []
-      var detail = selected ? plugins.filter(function (p) { return p === selected || p.repository === selected || p.id === selected })[0] || null : null
+      // Detail must resolve from the CURRENT tab's data source: featured repos
+      // are rarely in the discovery results, so a featured card clicked would
+      // otherwise resolve detail to null and never open the side panel.
+      var detail = null
+      if (selected) {
+        var detailSrc = viewTab === 'featured' ? featuredRows : plugins
+        detail = detailSrc.filter(function (p) { return p === selected || p.repository === selected || p.id === selected })[0] || null
+      }
 
       // When a plugin detail opens, fetch the repo's README and extract the
       // real npm package name (`dsh plugin --profile web add <pkg>`) — the
@@ -641,6 +677,9 @@ window.__ModuleLoader__.load({
           el('button', { key: 'x', type: 'button', onClick: props.onClose, style: Object.assign({}, BTN, { minWidth: '28px', padding: '0 8px' }) }, '✕'),
         ]),
         el('div', { key: 'tabs', style: { display: 'flex', gap: '4px', padding: '0 16px', borderBottom: '1px solid var(--dsw-alias-border-default, #e8e8e8)' } }, [
+          el('button', { key: 'f', type: 'button', onClick: function () { setViewTab('featured'); setSelected(null); loadFeatured() },
+            style: { padding: '10px 12px', border: 'none', borderBottom: '2px solid ' + (viewTab === 'featured' ? 'var(--dsw-alias-accent-strong, #4d6bfe)' : 'transparent'), background: 'transparent', cursor: 'pointer', font: 'inherit', fontSize: '13px', color: viewTab === 'featured' ? 'var(--dsw-alias-accent-strong, #4d6bfe)' : 'var(--dsw-alias-label-secondary, #4b5563)', fontWeight: viewTab === 'featured' ? 600 : 400 } },
+            '精选'),
           el('button', { key: 'd', type: 'button', onClick: function () { setViewTab('discover'); setSelected(null) },
             style: { padding: '10px 12px', border: 'none', borderBottom: '2px solid ' + (viewTab === 'discover' ? 'var(--dsw-alias-accent-strong, #4d6bfe)' : 'transparent'), background: 'transparent', cursor: 'pointer', font: 'inherit', fontSize: '13px', color: viewTab === 'discover' ? 'var(--dsw-alias-accent-strong, #4d6bfe)' : 'var(--dsw-alias-label-secondary, #4b5563)', fontWeight: viewTab === 'discover' ? 600 : 400 } }, '发现'),
           el('button', { key: 'i', type: 'button', onClick: function () { setViewTab('installed'); setSelected(null) },
@@ -669,7 +708,22 @@ window.__ModuleLoader__.load({
                       })
                     : el('div', { key: 'empty', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) }, '还没有已安装插件，去「发现」标签安装')),
               ])
-            : [
+            : viewTab === 'featured'
+              ? [
+                  el('div', { key: 'featlist', style: { flex: '1 1 auto', minWidth: '0', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' } },
+                    !featured ? el('div', { key: 'loading', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) }, '正在加载精选…')
+                      : !featuredRows.length ? el('div', { key: 'empty', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) }, '未获取到精选插件：网络不可用')
+                      : featuredRows.map(function (p) {
+                          return el(MarketCard, { key: (p.repository || p.id), p: p, status: installedFor(p.repository), selected: detail === p,
+                            onSelect: function () { setSelected(detail === p ? null : p); setInstallPkg(pkgNameFor(p.repository)); setOpMsg('') } })
+                        })),
+                  detail ? el(MarketDetail, { key: 'detail', p: detail, installed: installedFor(detail.repository),
+                    busy: busy, installPkg: installPkg, opMsg: opMsg,
+                    onInstallPkg: function (v) { setInstallPkg(v) },
+                    onInstall: actionInstall, onRemove: actionRemove, onToggle: actionToggle,
+                    onBack: function () { setSelected(null) } }) : null,
+                ]
+              : [
               el('div', { key: 'list', style: { flex: '1 1 auto', minWidth: '0', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' } },
                 loading && !plugins.length ? el('div', { key: 'loading', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) }, '正在加载插件目录…')
                   : !plugins.length ? el('div', { key: 'empty', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) }, '未获取到插件：网络不可用或本地缓存为空，可点击右上角「刷新」重试')
@@ -780,6 +834,7 @@ window.__ModuleLoader__.load({
           '.dshd-progress{position:relative;height:4px;border-radius:2px;overflow:hidden;background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06))}' +
           '.dshd-progress::after{content:"";position:absolute;top:0;left:0;height:100%;width:38%;border-radius:2px;background:var(--dsw-alias-accent-strong,#4d6bfe);animation:dshd-slide 1.1s ease-in-out infinite}' +
           '@keyframes dshd-slide{0%{left:-40%}100%{left:102%}}' +
+          '@keyframes dshd-detail-in{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:none}}' +
           '[class*="footerActions"]{flex-direction:column}'
         document.head.appendChild(st)
       } catch (e) { /* best effort */ }
@@ -906,6 +961,12 @@ window.__ModuleLoader__.load({
         })
       }
 
+      function saveCloseBehavior(v) {
+        callJson('saveConfig', JSON.stringify({ closeBehavior: v })).then(function (r) {
+          if (r === 'ok') { callJson('getConfig').then(function (nv) { if (nv) setConfig(nv) }) }
+        })
+      }
+
       function setField(k) {
         return function (e) {
           var v = e.target.type === 'checkbox' ? e.target.checked : e.target.value
@@ -941,6 +1002,15 @@ window.__ModuleLoader__.load({
             el(KV, { key: 'd', k: '数据目录', v: config.dataDir || '-' }),
             el(KV, { key: 'l', k: '日志目录', v: config.effectiveLogsDir || config.logsDir || '-' }),
             el(KV, { key: 'p', k: '下载代理', v: config.proxyUrl || '系统代理' }),
+            el('div', { key: 'close', style: { display: 'flex', gap: '8px', alignItems: 'center', minHeight: '20px' } }, [
+              el('span', { key: 'k', style: Object.assign({}, MUTED2, { flex: '0 0 88px' }) }, '关闭行为'),
+              el('select', { key: 'v', value: config.closeBehavior || 'ask',
+                onChange: function (e) { saveCloseBehavior(e.target.value) },
+                style: { flex: '0 0 auto', border: '1px solid var(--dsw-alias-border-default, #d8dde3)', borderRadius: '8px', padding: '3px 6px', background: 'transparent', color: 'inherit', font: 'inherit', fontSize: '12px' } },
+                [el('option', { key: 'ask', value: 'ask' }, '每次询问'),
+                 el('option', { key: 'tray', value: 'tray' }, '隐藏到托盘'),
+                 el('option', { key: 'exit', value: 'exit' }, '直接退出')]),
+            ]),
           ])
         : el('div', { key: 'loading', style: MUTED2 }, '配置加载中…')
 

@@ -10,9 +10,6 @@
   <strong>DSH Desktop 的官方 client 插件：把「插件市场」和「DSH Desktop 设置」装进 dsh web 侧栏。</strong><br>
   市场发现、安装、更新、启停一次搞定，配置面板与桌面端共享同一套 host bridge。
 </p>
-
-![插件市场面板：发现 / 已安装双标签，GitHub topic 发现 + 收录目录，star 排序，卡片详情与安装](assets/market.png)
-
 `dshdesktop-client` 通过 dsh 官方 slots 机制注入两个入口：
 
 - 侧栏**设置按钮上方**注入「插件市场」按钮（`sidebar.footer.action`），点击打开页内市场面板；
