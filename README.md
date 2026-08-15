@@ -84,8 +84,6 @@ cp package.json index.js client.js ~/.dsh/profiles/web/node_modules/@dshd/dshdes
 | `githubToken` | GitHub 令牌（提升限流），或 `GH_TOKEN` | — |
 | `proxyUrl` | 下载代理（直连留空） | — |
 
-## 约束与踩坑
+## License
 
-1. **依赖 dsh 版本契约**：`sidebar.footer.action` / `settings.section` + `slots.inject/register` 在 dsh **0.1.0-rc.6** 验证通过。dsh 升级时若插槽变动需同步适配 `peerDependencies` 与 `client.js`。
-2. **host object 依赖**：插件运行时需 DSH Desktop 已注入 `dshdesktop` host object；若在浏览器（非 DSH Desktop 窗口）里打开 dsh GUI，市场目录 / 配置读写不可用，插件会 `console.warn` 而非崩溃。
-3. **JSX 写法**：`client.js` 用 `el(type, props, children)` 辅助函数生成元素（react/jsx-runtime 的 `jsx` 第三参数是 key，不是 children），不要改回裸 `jsx(type, props, children)`。
+[MIT](LICENSE) — Copyright (c) 2026 Ackow。
