@@ -54,7 +54,7 @@ window.__ModuleLoader__.load({
     // only when the client truly needs a new exe capability does it bump this.
     //
     // Keep CLIENT_VERSION in sync with package.json version.
-    var CLIENT_VERSION = '0.1.5'
+    var CLIENT_VERSION = '0.1.6'
     var REQUIRED_EXE_VERSION = '0.1.5'
 
     // versionGate: {status:'checking'|'ok'|'mismatch', exeVersion, releasesUrl}
