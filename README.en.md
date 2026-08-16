@@ -22,6 +22,8 @@ All capabilities communicate with the DSH Desktop main window through `chrome.we
 
 ![Marketplace panel: search + category cards on the Discover tab + detail sidebar](assets/market-discover.png)
 
+> ⚠️ **Installation is still being polished — stay tuned.** The Discover tab supports browsing, searching and viewing details; install / update / enable-disable flows are still being refined, and some plugins (e.g. git-hosted installs, packages with build scripts) may not install cleanly yet. We recommend starting with the official plugins (`@dshd/dshdesktop-client`, `@dshd/dsh-usage`) to experience the full flow.
+
 ### Discover
 
 - **Sources**: GitHub topic search (default `dsh-plugin` / `dsh-plugins`, configurable) + community seed catalog, sorted by stars, deduplicated, cached locally (24h, falls back to cache when offline)

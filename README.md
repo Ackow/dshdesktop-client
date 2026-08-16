@@ -21,6 +21,8 @@
 
 ![市场面板：发现 tab 的搜索 + 分类卡片 + 详情侧栏](assets/market-discover.png)
 
+> ⚠️ **安装功能尚不完善，敬请期待。** 当前「发现」tab 支持浏览、搜索与查看详情；安装 / 更新 / 启停等操作正在打磨中，部分插件（如 git 仓库安装、带构建脚本的包）可能无法顺利安装，建议先以官方插件（`@dshd/dshdesktop-client`、`@dshd/dsh-usage`）体验完整流程。
+
 ### 发现
 
 - **来源**：GitHub topic 搜索（默认 `dsh-plugin` / `dsh-plugins`，配置可改）+ 社区收录目录（seed catalog），按 star 排序、去重、本地缓存（24h，断网回退缓存）
