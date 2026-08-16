@@ -255,8 +255,8 @@ window.__ModuleLoader__.load({
       marginRight: '4px', marginTop: '4px', flex: '0 0 auto',
     }
     var BTN = {
+      className: 'dshd-btn',
       minHeight: '28px', padding: '0 12px',
-      border: '1px solid var(--dsw-alias-border-default, #d8dde3)',
       borderRadius: '8px', background: 'transparent',
       color: 'var(--dsw-alias-label-primary, #1f2329)',
       cursor: 'pointer', font: 'inherit', fontSize: '12px',
@@ -699,7 +699,7 @@ window.__ModuleLoader__.load({
             ? el('div', { key: 'instwrap', style: { flex: '1 1 auto', minWidth: '0', display: 'flex', flexDirection: 'column', gap: '8px', minHeight: '0' } }, [
                 el('div', { key: 'actions', style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
                   el('button', { key: 'chk', type: 'button', disabled: busy, onClick: checkUpdates, style: BTN }, '检查更新'),
-                  el('button', { key: 'restart', type: 'button', disabled: busy, onClick: restartServer, style: Object.assign({}, BTN, { borderColor: 'var(--dsw-alias-border-strong, #b0b7c3)' }) }, '立即重启'),
+                  el('button', { key: 'restart', type: 'button', disabled: busy, onClick: restartServer, style: BTN }, '立即重启'),
                 ]),
                 el('div', { key: 'instlist', style: { flex: '1 1 auto', minWidth: '0', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' } },
                   installed.length
@@ -835,6 +835,13 @@ window.__ModuleLoader__.load({
           '.dshd-progress::after{content:"";position:absolute;top:0;left:0;height:100%;width:38%;border-radius:2px;background:var(--dsw-alias-accent-strong,#4d6bfe);animation:dshd-slide 1.1s ease-in-out infinite}' +
           '@keyframes dshd-slide{0%{left:-40%}100%{left:102%}}' +
           '@keyframes dshd-detail-in{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:none}}' +
+          // Unified market button: ONE light border (no dark/strong edges),
+          // subtle hover scale + background so the state is obvious. Inline
+          // styles cannot express :hover/:active, hence the class.
+          '.dshd-btn{border:1px solid var(--dsw-alias-border-default,#d8dde3);border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary,#1f2329);cursor:pointer;font:inherit;transition:transform 120ms ease,background 120ms ease,border-color 120ms ease}' +
+          '.dshd-btn:hover{transform:scale(1.04);background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.05))}' +
+          '.dshd-btn:active{transform:scale(.97);background:var(--dsw-alias-interactive-bg-active,rgba(0,0,0,.10))}' +
+          '.dshd-btn:disabled{opacity:.55;cursor:not-allowed;transform:none}' +
           '[class*="footerActions"]{flex-direction:column}'
         document.head.appendChild(st)
       } catch (e) { /* best effort */ }
