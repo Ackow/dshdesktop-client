@@ -949,6 +949,7 @@ window.__ModuleLoader__.load({
           dataDir: (config && config.dataDir) || '',
           logsDir: (config && config.logsDir) || '',
           proxyUrl: (config && config.proxyUrl) || '',
+          npmRegistry: (config && config.npmRegistry) || '',
         })
         setSaveMsg(null)
         setEditing(true)
@@ -1039,6 +1040,7 @@ window.__ModuleLoader__.load({
                 el(Field, { key: 'data', label: '数据目录（留空 = 默认 %LOCALAPPDATA%\\DSHDesktop，重启生效）' }, el(Input, { type: 'text', value: form.dataDir, onChange: setField('dataDir'), placeholder: (config && config.dataDir) || '' })),
                 el(Field, { key: 'log', label: '日志目录（留空 = 数据目录\\logs）' }, el(Input, { type: 'text', value: form.logsDir, onChange: setField('logsDir'), placeholder: (config && config.effectiveLogsDir) || '' })),
                 el(Field, { key: 'proxy', label: '下载代理（如 http://127.0.0.1:7890，留空 = 系统代理环境变量）' }, el(Input, { type: 'text', value: form.proxyUrl, onChange: setField('proxyUrl'), placeholder: 'http://127.0.0.1:7890' })),
+                el(Field, { key: 'registry', label: 'npm 镜像（dsh 首次下载用，留空 = npm 默认源）' }, el(Input, { type: 'text', value: form.npmRegistry, onChange: setField('npmRegistry'), placeholder: 'https://registry.npmmirror.com' })),
                 el('label', { key: 'npx', style: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' } }, [
                   el('input', { type: 'checkbox', checked: form.useNpxFallback, onChange: setField('useNpxFallback') }),
                   '允许 npx 在线下载 dsh（首次联网）',
