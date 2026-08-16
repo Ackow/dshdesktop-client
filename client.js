@@ -807,7 +807,14 @@ window.__ModuleLoader__.load({
         })
       }
       function actionUpdate(pkg) {
-        try { if (!window.confirm('将把「' + pkg + '」更新到最新版本。继续？')) return } catch (e) { /* noop */ }
+        // Pass the EXPLICIT latest version (pkg@x.y.z), not bare pkg: an update
+        // via `pkg@latest` can be poisoned by the npmmirror metadata cache
+        // (old "latest" → pnpm re-resolves to the old version and the update
+        // silently does nothing / installs the stale one). The C# side treats
+        // a version-suffixed spec verbatim, so pnpm installs exactly this.
+        var latest = (updates && updates[pkg] && updates[pkg].latest) || ''
+        var spec = latest ? pkg + '@' + latest : pkg
+        try { if (!window.confirm('将把「' + pkg + '」更新到' + (latest ? ' v' + latest : '最新版本') + '。继续？')) return } catch (e) { /* noop */ }
         setBusy(true); setOpMsg('更新中…（可能需联网下载）')
         startProgressPoll(function (phase, msg) {
           setBusy(false)
@@ -820,7 +827,7 @@ window.__ModuleLoader__.load({
           }
           setTimeout(function () { setInstallProg(null) }, 1500)
         })
-        bridgeCall('pluginInstall', pkg)
+        bridgeCall('pluginInstall', spec)
       }
       function checkUpdates() {
         setOpMsg('检查更新中…')
