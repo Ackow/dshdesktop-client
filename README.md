@@ -28,7 +28,11 @@
 - **来源**：GitHub topic 搜索（默认 `dsh-plugin` / `dsh-plugins`，配置可改）+ 社区收录目录（seed catalog），按 star 排序、去重、本地缓存（24h，断网回退缓存）
 - **过滤**：只保留带 `dsh-plugin`/`dsh-plugins` topic 的仓库——宽泛 topic（如 `deepseek-harness`）搜到的非插件项目不会出现
 - **搜索**：按名称 / 描述 / 仓库 / 标签实时过滤
-- **详情**：仓库 / Star / License / 来源 / 信任 / 归档 + 标签；安装命令**自动从仓库 README 提取**（`dsh plugin --profile web add <pkg>`），可手动修改
+- **详情**：仓库 / Star / License / 来源 / 信任 / 归档 + 标签；安装命令**自动从仓库 README 识别**，按类别提示：
+  - 识别期间输入框**禁用并显示加载动画**，不预填任何猜测值；
+  - **npm / GitHub / 本地路径** → 填好可直接安装的命令（绿色提示）；
+  - **Skill / 全局 CLI / MCP / 桌面应用 / repository-plugin / 其它 profile** → 判定为「不可直接安装」，输入框锁定并给出橙色分类提示（如「这是 Skill，请用 skills 安装」）；
+  - **未识别到** → 输入框留空可手动输入（灰色提示）；**README 获取失败** → 红色提示，仍可手动输入。
 
 ### 已安装
 

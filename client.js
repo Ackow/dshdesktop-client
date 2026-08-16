@@ -36,7 +36,7 @@ window.__ModuleLoader__.load({
     var createRoot = require('react-dom/client').createRoot
 
     // Services this plugin waits for before activating.
-    var inject = ['slots']
+    var inject = ['slots', 'sessions']
 
     var LOG = function (msg) {
       try { console.log('[dshdesktop] ' + msg) } catch (e) { /* noop */ }
@@ -262,6 +262,86 @@ window.__ModuleLoader__.load({
       cursor: 'pointer', font: 'inherit', fontSize: '12px',
     }
 
+    // -------------------------------------------------- install recognition
+
+    // Module-level helpers for the detail-panel install box. The box NEVER
+    // shows a guessed command: while recognition is loading it is disabled
+    // with a spinner; only a README-derived command (or the user's own
+    // typing) lands in it. Result shape from the C# bridge `readmeInstall`:
+    // {recognized, kind, direct, pkg, command, hint, matches} with
+    // kind ∈ npm|github|local|repository-plugin|skill|cli|mcp|desktop|
+    //       other-profile|none (see docs/plugin-install-methods.md).
+
+    // Normalize the recognition result. Older DSH Desktop exes return a plain
+    // array of command strings — treat that as a generic recognized command so
+    // the panel still works during a transition.
+    function normalizeRecog(res) {
+      if (Array.isArray(res)) {
+        var first = String((res && res[0]) || '').trim()
+        if (first) {
+          return { recognized: true, kind: 'command', direct: true, pkg: first, command: first,
+            hint: '已识别到安装命令，可直接安装（如与期望不符可修改）', matches: res }
+        }
+        return { recognized: false, kind: 'none', direct: false, pkg: '', command: '',
+          hint: '未识别到安装命令，可手动输入包名', matches: [] }
+      }
+      if (!res || typeof res !== 'object' || !res.kind) {
+        return { recognized: false, kind: 'none', direct: false, pkg: '', command: '',
+          hint: '识别失败，可手动输入包名', matches: [] }
+      }
+      return res
+    }
+
+    // Detail-panel install-box state machine, driven by the recognition:
+    //   loading — spinner + input disabled (never a guessed value)
+    //   direct  — input enabled with the README command, install allowed
+    //   non-direct recognized (skill/cli/mcp/desktop/…) — input disabled,
+    //              install blocked, orange explanation hint
+    //   none    — input enabled and empty, muted "not recognized" hint
+    //   error   — input enabled and empty, red hint
+    function recogState(recog) {
+      if (!recog) return { loading: false, done: false, kind: '', direct: false }
+      if (recog.status === 'loading') return { loading: true, done: false, kind: 'loading', direct: false }
+      var r = recog.result || {}
+      return { loading: false, done: true, kind: r.kind || 'none', direct: !!r.direct, result: r }
+    }
+    function installInputDisabled(recog) {
+      var s = recogState(recog)
+      if (s.loading) return true
+      // Recognized as a NON-directly-installable thing (skill / global CLI /
+      // MCP / desktop app / repository-plugin / other profile): `dsh plugin
+      // add` cannot install it, so lock the box and explain. `none` and
+      // `error` stay EDITABLE so the user can type a package name manually.
+      if (s.done && s.result && s.result.recognized && !s.direct) return true
+      return false
+    }
+    function installButtonDisabled(recog) {
+      return installInputDisabled(recog)
+    }
+    function installPlaceholder(recog) {
+      var s = recogState(recog)
+      if (s.loading) return '正在识别安装方式…'
+      if (s.done && s.direct) return 'dsh plugin --profile web add <包名>'
+      return '手动输入包名或完整安装命令'
+    }
+    // Hint text + color per recognition state: direct → green, recognized
+    // but not installable → orange, none → muted, error → red.
+    function installHint(recog) {
+      var s = recogState(recog)
+      if (s.loading) {
+        return { color: 'var(--dsw-alias-label-secondary, #4b5563)', text: '正在读取仓库 README 识别安装方式…', spinner: true }
+      }
+      if (!s.done) {
+        return { color: 'var(--dsw-alias-label-tertiary, #6b7684)', text: '选择插件后自动识别安装方式', spinner: false }
+      }
+      var r = s.result
+      var color = s.direct ? '#1f9d55'
+        : r.kind === 'none' ? 'var(--dsw-alias-label-tertiary, #6b7684)'
+        : r.kind === 'error' ? '#c0392b'
+        : '#b45409'
+      return { color: color, text: r.hint || (s.direct ? '已识别安装方式，可直接安装' : '已识别，但无法直接安装'), spinner: false }
+    }
+
     function MarketCard(props) {
       var p = props.p
       var [hover, setHover] = useState(false)
@@ -338,15 +418,22 @@ window.__ModuleLoader__.load({
                   : el('button', { key: 'rm', type: 'button', disabled: props.busy, onClick: function () { props.onRemove(props.installed.name) }, style: Object.assign({}, BTN, { color: '#b45409' }) }, '移除'),
               ]
             : [
-                el('input', { key: 'pkg', type: 'text', value: props.installPkg, placeholder: 'dsh plugin --profile web add <包名>',
+                el('input', { key: 'pkg', type: 'text', value: props.installPkg,
+                  placeholder: installPlaceholder(props.recog),
+                  disabled: installInputDisabled(props.recog),
                   onChange: function (e) { props.onInstallPkg(e.target.value) },
                   style: { flex: '1 1 180px', minWidth: '160px', border: '1px solid var(--dsw-alias-border-default, #d8dde3)', borderRadius: '8px', padding: '4px 8px', background: 'transparent', color: 'inherit', font: 'inherit' } }),
-                el('button', { key: 'install', type: 'button', disabled: props.busy, onClick: function () { props.onInstall(props.installPkg) }, style: { minHeight: '28px', padding: '0 12px', border: '1px solid #1f9d55', borderRadius: '8px', background: '#1f9d55', color: '#fff', cursor: 'pointer', font: 'inherit', fontSize: '12px' } }, props.busy ? '处理中…' : '安装'),
+                el('button', { key: 'install', type: 'button', disabled: props.busy || installButtonDisabled(props.recog), onClick: function () { props.onInstall(props.installPkg) }, style: { minHeight: '28px', padding: '0 12px', border: '1px solid #1f9d55', borderRadius: '8px', background: '#1f9d55', color: '#fff', cursor: 'pointer', font: 'inherit', fontSize: '12px' } }, props.busy ? '处理中…' : '安装'),
               ],
           el('button', { key: 'repo', type: 'button', onClick: function () { openExternalRepo(p.url) }, style: BTN }, '打开仓库'),
         ]),
-        !props.installed ? el('div', { key: 'hint', style: Object.assign({}, MUTED, { fontSize: '11px', marginTop: '4px' }) },
-          '执行 dsh plugin --profile web add，安装到本机 web profile。scoped 包（@scope/name）请手动填写包名。') : null,
+        !props.installed ? (function () {
+          var hint = installHint(props.recog)
+          return el('div', { key: 'hint', style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px', fontSize: '11px', color: hint.color, lineHeight: '16px' } }, [
+            hint.spinner ? el('span', { key: 'sp', className: 'dshd-spinner' }) : null,
+            el('span', { key: 'tx' }, hint.text),
+          ])
+        })() : null,
       ])
     }
 
@@ -426,6 +513,15 @@ window.__ModuleLoader__.load({
       var [installProg, setInstallProg] = useState(null) // {package, phase, resolved, added, message}
       var lastActRef = useRef(null)   // ms timestamp of last progress change
       var [staleSec, setStaleSec] = useState(0)
+      // Install-command recognition state for the detail panel:
+      //   null                    — no detail open (no recognition)
+      //   {status:'loading'}      — README fetch + recognition in flight
+      //   {status:'done', result} — {recognized, kind, direct, pkg, command, hint, matches}
+      // The install box NEVER shows a guessed command: while loading it is
+      // disabled with a spinner; only a README-derived command (or the user's
+      // own typing) lands in it.
+      var [recog, setRecog] = useState(null)
+      var recogRepoRef = useRef(null)   // race guard: repo the recognition started for
 
       // Poll C# install progress while an install runs; stop when it settles.
       // `onDone(phase, message)` fires once with the final phase — install
@@ -495,21 +591,17 @@ window.__ModuleLoader__.load({
       }, [])
 
       // Bare repo basename (owner/repo → repo), lowercased — used ONLY for
-      // matching against installed package names. Do NOT reuse pkgNameFor here:
-      // that returns a full install command for the install box, which would
-      // never match a package name.
+      // matching against installed package names. The install box never uses
+      // it: a repo basename is NOT the npm package name (monorepos /
+      // aggregator packages), so guessing it would mislead. The install box
+      // only ever holds a README-derived command or the user's own typing.
       function barePkgName(repo) {
         var s = String(repo || '').trim()
         if (!s) return ''
         var parts = s.split('/')
         return (parts[parts.length - 1] || '').toLowerCase()
       }
-      // Full install command (README may give the real package name; fallback
-      // to the repo basename) — shown in and edited from the install box.
-      function pkgNameFor(repo) {
-        var base = barePkgName(repo)
-        return base ? 'dsh plugin --profile web add ' + base : ''
-      }
+
       function installedFor(repo) {
         var guess = barePkgName(repo)
         if (!guess) return null
@@ -596,8 +688,22 @@ window.__ModuleLoader__.load({
         setBusy(true); setOpMsg('正在重启本地服务…')
         bridgeCall('restart').then(function (v) {
           setBusy(false)
-          setOpMsg(v === 'ok' ? '已重启，正在重新加载…' : '重启失败：' + ((v && v.error) || '未知'))
+          setOpMsg(v && v.ok ? '已重启，正在重新加载…' : '重启失败：' + ((v && v.error) || '未知'))
         })
+      }
+
+      // Select/deselect a plugin card. Selecting starts install-command
+      // recognition: the install box is cleared and locked (spinner) until the
+      // README is read — NO guessed command is ever shown.
+      function selectPlugin(p) {
+        if (detail === p) {
+          setSelected(null); setInstallPkg(''); setOpMsg(''); setRecog(null)
+          return
+        }
+        setSelected(p)
+        setInstallPkg('')
+        setOpMsg('')
+        setRecog({ status: 'loading' })
       }
 
       var plugins = (state && state.plugins) || []
@@ -628,24 +734,26 @@ window.__ModuleLoader__.load({
         detail = detailSrc.filter(function (p) { return p === selected || p.repository === selected || p.id === selected })[0] || null
       }
 
-      // When a plugin detail opens, fetch the repo's README and extract the
-      // real npm package name (`dsh plugin --profile web add <pkg>`) — the
-      // repo name is not the package name, so we stop guessing.
+      // When a plugin detail opens, fetch the repo's README and RECOGNIZE the
+      // install method (kind/direct/command/hint). The install box starts
+      // DISABLED with a spinner while recognition runs — it never shows a
+      // guessed value. Only a README-derived command lands in it; if nothing
+      // is recognized the box stays empty and the user can type manually.
+      // recogRepoRef guards against a slow recognition for a previously
+      // selected repo overwriting the current one.
       useEffect(function () {
         if (!detail) return
         if (installedFor(detail.repository)) return
-        bridgeCall('readmeInstall', detail.repository).then(function (names) {
-          if (names && names.length && names[0]) {
-            LOG('readme install pkg: ' + names[0])
-            setInstallPkg(names[0])
-          } else {
-            // README fetch failed (network / no command in README): do NOT leave
-            // a guessed bare package name — that misleads (repo name ≠ package
-            // name, e.g. dsh-ads vs @dsh-external/dsh-ads). Clear it and hint.
-            LOG('readme install: no command found for ' + detail.repository)
-            setInstallPkg('')
-            setOpMsg('未能从 README 提取安装命令，请手动输入（可到仓库 README 查看）')
-          }
+        var repo = detail.repository
+        recogRepoRef.current = repo
+        setInstallPkg('')
+        setRecog({ status: 'loading' })
+        bridgeCall('readmeInstall', repo).then(function (res) {
+          if (recogRepoRef.current !== repo) return   // a newer selection won
+          var r = normalizeRecog(res)
+          LOG('readme install: kind=' + r.kind + ' direct=' + r.direct + ' cmd=' + (r.command || ''))
+          setInstallPkg(r.command || '')
+          setRecog({ status: 'done', result: r })
         })
       }, [detail ? detail.repository : ''])
 
@@ -715,10 +823,10 @@ window.__ModuleLoader__.load({
                       : !featuredRows.length ? el('div', { key: 'empty', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) }, '未获取到精选插件：网络不可用')
                       : featuredRows.map(function (p) {
                           return el(MarketCard, { key: (p.repository || p.id), p: p, status: installedFor(p.repository), selected: detail === p,
-                            onSelect: function () { setSelected(detail === p ? null : p); setInstallPkg(pkgNameFor(p.repository)); setOpMsg('') } })
+                            onSelect: selectPlugin })
                         })),
                   detail ? el(MarketDetail, { key: 'detail', p: detail, installed: installedFor(detail.repository),
-                    busy: busy, installPkg: installPkg, opMsg: opMsg,
+                    busy: busy, installPkg: installPkg, opMsg: opMsg, recog: recog,
                     onInstallPkg: function (v) { setInstallPkg(v) },
                     onInstall: actionInstall, onRemove: actionRemove, onToggle: actionToggle,
                     onBack: function () { setSelected(null) } }) : null,
@@ -730,10 +838,10 @@ window.__ModuleLoader__.load({
                   : !rows.length ? el('div', { key: 'no', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) }, '没有匹配的插件')
                   : rows.map(function (p) {
                     return el(MarketCard, { key: (p.repository || p.id), p: p, status: installedFor(p.repository), selected: detail === p,
-                      onSelect: function () { setSelected(detail === p ? null : p); setInstallPkg(pkgNameFor(p.repository)); setOpMsg('') } })
+                      onSelect: selectPlugin })
                   })),
               detail ? el(MarketDetail, { key: 'detail', p: detail, installed: installedFor(detail.repository),
-                busy: busy, installPkg: installPkg, opMsg: opMsg,
+                busy: busy, installPkg: installPkg, opMsg: opMsg, recog: recog,
                 onInstallPkg: function (v) { setInstallPkg(v) },
                 onInstall: actionInstall, onRemove: actionRemove, onToggle: actionToggle,
                 onBack: function () { setSelected(null) } }) : null,
@@ -809,6 +917,126 @@ window.__ModuleLoader__.load({
       ])
     }
 
+    // ---------------------------------------------------- install floating ball
+
+    // Bottom-right floating ball shown while a plugin download/install is
+    // running in the background (works with the market panel closed — that's
+    // the point: you keep browsing the GUI while pnpm downloads). Clicking
+    // expands a small card with the package name, phase, progress bar and
+    // counts; it polls the same `installProgress` bridge as the panel.
+    // States: idle (hidden) → running (ball + spinner) → done/error (brief
+    // result flash, auto-hide).
+    function InstallBall() {
+      var [prog, setProg] = useState(null)      // {package, phase, resolved, added, message}
+      var [open, setOpen] = useState(false)     // expanded card
+      var [gone, setGone] = useState(false)     // auto-hidden after done/error
+      var [staleSec, setStaleSec] = useState(0)
+      var lastActRef = useRef(null)
+
+      // Poll installProgress forever (idle included): if the poll stopped
+      // when idle, a download started LATER would never be noticed and the
+      // ball would not appear. Idle/done/error just update state; the timer
+      // only stops on unmount.
+      useEffect(function () {
+        var stopped = false
+        var prev = null
+        lastActRef.current = Date.now()
+        var timer = setInterval(function () {
+          bridgeCall('installProgress').then(function (v) {
+            if (stopped) return
+            if (!v || !v.phase || v.phase === 'done' || v.phase === 'error') {
+              if (v && (v.phase === 'done' || v.phase === 'error')) {
+                setProg(v)
+                // show result briefly, then hide the ball (poll keeps running)
+                setGone(false)
+                clearTimeout(InstallBall._hideTimer)
+                InstallBall._hideTimer = setTimeout(function () { setGone(true); setOpen(false) }, 5000)
+              } else {
+                // idle — no download running; hide but KEEP polling
+                setProg(null)
+                setGone(false)
+              }
+              return
+            }
+            var changed = !prev || prev.resolved !== v.resolved || prev.added !== v.added || prev.message !== v.message
+            if (changed) lastActRef.current = Date.now()
+            prev = v
+            setProg(v)
+            setStaleSec(Math.floor((Date.now() - lastActRef.current) / 1000))
+            setGone(false)
+          })
+        }, 800)
+        return function () { stopped = true; clearInterval(timer) }
+      }, [])
+
+      if (!prog || gone) return null
+      var active = prog.phase === 'resolving' || prog.phase === 'installing'
+      var isErr = prog.phase === 'error'
+      var isDone = prog.phase === 'done'
+      var pct = (prog.added || 0) > 0
+        ? Math.min(100, Math.round(100 * (prog.added || 0) / Math.max(1, prog.resolved || 1)))
+        : 0
+
+      // Ball: circular, accent when running; amber for error flash; green done.
+      var ballBg = isErr ? '#b45409' : isDone ? '#1f9d55' : 'var(--dsw-alias-accent-strong, #4d6bfe)'
+      return el('div', {
+        style: {
+          position: 'fixed', right: '18px', bottom: '18px', zIndex: '1180',
+          display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px',
+          font: 'inherit',
+        },
+      }, [
+        // Expanded card (above the ball) when clicked
+        open ? el('div', { key: 'card', style: {
+          width: '300px', borderRadius: '14px', padding: '12px 14px',
+          background: 'var(--dsw-alias-bg-layer-2, #ffffff)',
+          boxShadow: 'var(--dsw-shadow-lv3, 0 8px 40px rgba(0,0,0,0.25))',
+          border: '1px solid var(--dsw-alias-border-default, #e8e8e8)',
+          color: 'var(--dsw-alias-label-primary, #202124)',
+          fontSize: '12px', lineHeight: '18px', textAlign: 'left',
+        } }, [
+          el('div', { key: 'head', style: { display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' } }, [
+            el('strong', { key: 't', style: { flex: '1 1 auto', minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '12px' } },
+              isErr ? '插件安装失败' : isDone ? '插件安装完成' : '正在下载插件…'),
+            el('button', { key: 'x', type: 'button', onClick: function () { setOpen(false); setGone(true) },
+              style: { border: 'none', background: 'transparent', color: 'var(--dsw-alias-label-tertiary, #6b7684)', cursor: 'pointer', fontSize: '13px', padding: '0 2px', font: 'inherit' } }, '✕'),
+          ]),
+          el('div', { key: 'pkg', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--dsw-alias-label-secondary, #4b5563)' } },
+            (prog.package || '') + (active && prog.phase === 'installing' ? ' · 安装中' : '')),
+          el('div', { key: 'bar', style: { marginTop: '8px', position: 'relative', height: '4px', borderRadius: '2px', overflow: 'hidden', background: 'var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.06))' } },
+            active && pct === 0
+              ? el('div', { key: 'slide', className: 'dshd-progress' })
+              : el('div', { key: 'fill', style: { position: 'absolute', top: '0', left: '0', height: '100%', width: pct + '%', borderRadius: '2px', background: 'var(--dsw-alias-accent-strong, #4d6bfe)', transition: 'width .3s' } })),
+          el('div', { key: 'meta', style: { marginTop: '6px', color: 'var(--dsw-alias-label-tertiary, #6b7684)', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '2px' } }, [
+            active && pct > 0
+              ? el('div', { key: 'c' }, '已下载 ' + (prog.added || 0) + ' / ' + (prog.resolved || 0) + ' 个依赖')
+              : active ? el('div', { key: 'c' }, '正在解析依赖 / 下载中…（共 ' + (prog.resolved || 1) + '）')
+              : el('div', { key: 'c' }, prog.message || ''),
+            staleSec > 15 && active
+              ? el('div', { key: 'st', style: { color: '#b45409' } }, '已 ' + staleSec + ' 秒无新进度，网络可能较慢')
+              : null,
+          ]),
+        ]) : null,
+        // The ball itself
+        el('button', {
+          key: 'ball', type: 'button', onClick: function () { setOpen(!open) },
+          title: active ? '插件下载中，点击查看' : (isErr ? '安装失败，点击查看' : '安装完成，点击查看'),
+          style: {
+            width: '44px', height: '44px', borderRadius: '50%', border: 'none',
+            background: ballBg, color: '#fff', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            boxShadow: '0 4px 14px rgba(0,0,0,0.28)', font: 'inherit',
+          },
+        }, [
+          active
+            ? el('span', { key: 'sp', className: 'dshd-ball-spin' })
+            : el('span', { key: 'ic', style: { fontSize: '17px', lineHeight: '1' } }, isErr ? '⚠' : '✓'),
+        ]),
+      ])
+    }
+    // module-scope timer handle so the ball can clear its own auto-hide
+    InstallBall._hideTimer = null
+
     var overlayRoot = null
     function ensureOverlay() {
       try {
@@ -818,6 +1046,12 @@ window.__ModuleLoader__.load({
         document.body.appendChild(el0)
         overlayRoot = createRoot(el0)
         overlayRoot.render(el(MarketOverlay, {}))
+        // second root: install floating ball (independent of the panel)
+        var el1 = document.createElement('div')
+        el1.id = 'dshdesktop-install-ball'
+        document.body.appendChild(el1)
+        var ballRoot = createRoot(el1)
+        ballRoot.render(el(InstallBall, {}))
       } catch (e) { LOG('overlay mount failed ' + e) }
     }
 
@@ -834,6 +1068,12 @@ window.__ModuleLoader__.load({
           '.dshd-progress{position:relative;height:4px;border-radius:2px;overflow:hidden;background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06))}' +
           '.dshd-progress::after{content:"";position:absolute;top:0;left:0;height:100%;width:38%;border-radius:2px;background:var(--dsw-alias-accent-strong,#4d6bfe);animation:dshd-slide 1.1s ease-in-out infinite}' +
           '@keyframes dshd-slide{0%{left:-40%}100%{left:102%}}' +
+          // Install-command recognition spinner: 12px ring, accent top border,
+          // shown beside the (disabled) install box while the README is read.
+          '.dshd-spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.12));border-top-color:var(--dsw-alias-accent-strong,#4d6bfe);border-radius:50%;animation:dshd-spin .8s linear infinite;flex:0 0 auto}' +
+          '@keyframes dshd-spin{to{transform:rotate(360deg)}}' +
+          // Floating install ball: white spinner ring inside the accent ball.
+          '.dshd-ball-spin{width:18px;height:18px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:dshd-spin .9s linear infinite}' +
           '@keyframes dshd-detail-in{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:none}}' +
           // Unified market button: ONE light border (no dark/strong edges),
           // subtle hover scale + background so the state is obvious. Inline
@@ -959,7 +1199,7 @@ window.__ModuleLoader__.load({
         if (!form) return
         setSaveMsg('保存中…')
         callJson('saveConfig', JSON.stringify(form)).then(function (v) {
-          if (v === 'ok') {
+          if (v && v.ok) {
             setEditing(false)
             setSaveMsg('已保存')
             callJson('getConfig').then(function (nv) { if (nv) setConfig(nv) })
@@ -971,7 +1211,7 @@ window.__ModuleLoader__.load({
 
       function saveCloseBehavior(v) {
         callJson('saveConfig', JSON.stringify({ closeBehavior: v })).then(function (r) {
-          if (r === 'ok') { callJson('getConfig').then(function (nv) { if (nv) setConfig(nv) }) }
+          if (r && r.ok) { callJson('getConfig').then(function (nv) { if (nv) setConfig(nv) }) }
         })
       }
 
@@ -1120,6 +1360,161 @@ window.__ModuleLoader__.load({
           }, DesktopSection)
         })
       }, 'dshdesktop: settings section')
+
+      // ---------------------------------------------------- session windows
+
+      // 1) Second window opened with ?dshdOpenSession=<id>: select that session
+      //    once the sessions service has a list (each window keeps its own
+      //    selection, so the new window lands on the requested conversation).
+      ctx.effect(function () {
+        var wanted = null
+        try {
+          var m = /[?&]dshdOpenSession=([^&]+)/.exec(window.location.search)
+          if (m) wanted = decodeURIComponent(m[1])
+        } catch (e) { /* noop */ }
+        if (!wanted) return
+        var sessions = ctx.sessions
+        if (!sessions || typeof sessions.open !== 'function') return
+        var done = false
+        var trySelect = function () {
+          if (done) return
+          try {
+            var snap = sessions.list && sessions.list.getSnapshot
+              ? sessions.list.getSnapshot()
+              : null
+            // SessionListState = { ids, byId: {id: summary}, current } — check byId
+            var byId = (snap && snap.byId) || {}
+            if (byId[wanted]) {
+              sessions.open(wanted)
+              done = true
+              LOG('opened session in this window: ' + wanted)
+              return
+            }
+            // list not ready yet — retry briefly
+            if (!done && retries < 20) { retries++; setTimeout(trySelect, 500) }
+          } catch (e) { LOG('session select failed: ' + e) }
+        }
+        var retries = 0
+        setTimeout(trySelect, 300)
+      }, 'dshdesktop: open-session param')
+
+      // 2) Global context menu on session-list rows: "在新窗口打开".
+      //    The browser's default menu is disabled by the shell
+      //    (AreDefaultContextMenusEnabled=false), so this is the ONLY menu.
+      //    A row is recognized by matching its text/title against the sessions
+      //    list (rows always show the session title; ids are not in the DOM).
+      ctx.effect(function () {
+        var sessions = ctx.sessions
+        if (!sessions || typeof sessions.open !== 'function') {
+          LOG('ctxmenu effect skipped: sessions=' + (!!sessions) + ' open=' + (typeof (sessions && sessions.open)))
+          return
+        }
+        var menuEl = null
+        var currentTarget = null
+
+        function sessionForText(text) {
+          try {
+            var snap = sessions.list && sessions.list.getSnapshot ? sessions.list.getSnapshot() : null
+            // SessionListState = { ids, byId: {id: summary}, current }
+            var byId = (snap && snap.byId) || {}
+            var t = String(text || '').trim()
+            if (!t) return null
+            var rows = Object.keys(byId).map(function (id) { return byId[id] })
+            // exact displayTitle/title match first, then prefix/contains (long titles are ellipsized)
+            for (var i = 0; i < rows.length; i++) {
+              var title = String(rows[i].displayTitle || rows[i].title || '').trim()
+              if (title && title === t) return rows[i]
+            }
+            for (var i = 0; i < rows.length; i++) {
+              var title = String(rows[i].displayTitle || rows[i].title || '').trim()
+              if (title && t.length >= 4 && title.indexOf(t) === 0) return rows[i]
+            }
+          } catch (e) { /* noop */ }
+          return null
+        }
+
+        function closeMenu() {
+          if (menuEl && menuEl.parentNode) menuEl.parentNode.removeChild(menuEl)
+          menuEl = null
+          currentTarget = null
+        }
+
+        function onContext(e) {
+          closeMenu()
+          // ---- diagnostics (temporary): log what we see so a right-click on
+          // a session row can be debugged from app.log ----
+          try {
+            var snap0 = sessions.list && sessions.list.getSnapshot ? sessions.list.getSnapshot() : null
+            var ids0 = snap0 ? Object.keys(snap0.byId || {}).length : -1
+            var tgt = e.target
+            var tinfo = (tgt && tgt.tagName) + '.' + String((tgt && tgt.className) || '').slice(0, 40)
+            LOG('ctxmenu: sessions=' + (!!sessions) + ' open=' + (typeof (sessions && sessions.open)) +
+                ' ids=' + ids0 + ' target=' + tinfo)
+          } catch (err) { LOG('ctxmenu diag failed: ' + err) }
+          // find the session row: the session list items are NOT button/a
+          // elements (diagnostics showed a SPAN.title inside a plain row), so
+          // walk up a few levels and match each ancestor's text against the
+          // session titles — the row that contains the title wins.
+          var node = e.target
+          var row = null
+          var text = ''
+          var depth = 0
+          while (node && node !== document.body && node !== document.documentElement && depth < 6) {
+            var t = (node.textContent || '').trim()
+            if (t && t.length <= 200 && sessionForText(t)) {
+              row = node
+              text = t
+              break
+            }
+            node = node.parentNode
+            depth++
+          }
+          if (!row) { LOG('ctxmenu: no session row matched (text-based)'); return }
+          var session = sessionForText(text)
+          LOG('ctxmenu: row=' + (row.tagName || '') + ' text="' + String(text).slice(0, 30) + '" match=' + (session ? 'YES' : 'NO'))
+          if (!session) return
+          e.preventDefault()
+          e.stopPropagation()
+          currentTarget = session
+          // render a minimal custom menu at the cursor
+          var label = String(session.displayTitle || session.title || session.id || '')
+          var d = document.createElement('div')
+          d.textContent = '在新窗口打开「' + (label.length > 20 ? label.slice(0, 20) + '…' : label) + '」'
+          d.style.cssText = 'position:fixed;z-index:99999;background:var(--dsw-alias-bg-layer-2,#fff);' +
+            'border:1px solid var(--dsw-alias-border-default,#e5e7eb);border-radius:8px;' +
+            'padding:8px 12px;font-size:12px;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.18);' +
+            'color:var(--dsw-alias-label-primary,#1f2329);white-space:nowrap'
+          d.addEventListener('click', function () {
+            var b = bridge()
+            if (b && typeof b.openSessionInNewWindow === 'function') {
+              try { b.openSessionInNewWindow(String(currentTarget.id || currentTarget.sessionId || '')) } catch (err) { LOG('open session failed: ' + err) }
+            }
+            closeMenu()
+          })
+          document.body.appendChild(d)
+          menuEl = d
+          // keep menu inside the viewport
+          var r = d.getBoundingClientRect()
+          d.style.left = Math.max(4, Math.min(e.clientX, window.innerWidth - r.width - 4)) + 'px'
+          d.style.top = Math.max(4, Math.min(e.clientY, window.innerHeight - r.height - 4)) + 'px'
+        }
+
+        document.addEventListener('contextmenu', onContext, true)
+        // NOTE: menu-close click must be BUBBLE phase (capture=false) — a
+        // capture-phase close removes the menu element before its own click
+        // handler runs, so "在新窗口打开" never fired.
+        document.addEventListener('click', closeMenu, false)
+        document.addEventListener('scroll', closeMenu, true)
+        window.addEventListener('blur', closeMenu, true)
+        // effect cleanup: remove listeners when the plugin fiber disposes
+        return function () {
+          document.removeEventListener('contextmenu', onContext, true)
+          document.removeEventListener('click', closeMenu, false)
+          document.removeEventListener('scroll', closeMenu, true)
+          window.removeEventListener('blur', closeMenu, true)
+          closeMenu()
+        }
+      }, 'dshdesktop: session context menu')
     }
 
     exports.inject = inject
