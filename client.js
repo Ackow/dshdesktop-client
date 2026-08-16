@@ -460,7 +460,7 @@ window.__ModuleLoader__.load({
           color: '#5c4300', fontSize: '10px', lineHeight: '16px', fontWeight: 700,
           padding: '0 8px', borderRadius: '0 0 8px 8px',
         } }, '精选') : null,
-        el('div', { key: 'h', style: { display: 'flex', alignItems: 'center', gap: '8px' } }, [
+        el('div', { key: 'h', style: { display: 'flex', alignItems: 'center', gap: '8px', paddingRight: isFeatured ? '58px' : '0' } }, [
           el('strong', { key: 't', style: { fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1 1 auto', minWidth: '0' } },
             p.title || p.repository),
           // Yellow star (GitHub gold), with count — big enough to read
@@ -614,7 +614,11 @@ window.__ModuleLoader__.load({
               // must still show the enable button.)
               (!p.enabled && !p.canActivate)
                 ? el('span', { key: 'nodsh', title: '该包没有 dsh.bundle/dsh.client 标记，dsh 无法激活它', style: Object.assign({}, MUTED, { fontSize: '11px' }) }, '无 dsh 标记，无法启用')
-                : el('button', { key: 'tgl', type: 'button', disabled: props.busy, onClick: function () { props.onToggle(p.name, !p.enabled) }, style: BTN }, p.enabled ? '禁用' : '启用'),
+                : el('button', { key: 'tgl', type: 'button', disabled: props.busy, onClick: function () { props.onToggle(p.name, !p.enabled) },
+                    style: p.enabled
+                      ? Object.assign({}, BTN, { color: '#b45409', borderColor: 'rgba(180,84,9,.5)' })   // 禁用 = destructive action → red
+                      : BTN },
+                    p.enabled ? '禁用' : '启用'),
               el('button', { key: 'rm', type: 'button', disabled: props.busy, onClick: function () { props.onRemove(p.name) }, style: Object.assign({}, BTN, { color: '#b45409' }) }, '移除'),
             ],
       ])
@@ -847,7 +851,13 @@ window.__ModuleLoader__.load({
       // recognition: the install box is cleared and locked (spinner) until the
       // README is read — NO guessed command is ever shown.
       function selectPlugin(p) {
-        if (detail === p) {
+        // Compare by identity field (repository/id), NOT object reference:
+        // featuredRows is rebuilt on every render (map + Object.assign creates
+        // fresh objects), so a stored reference would go stale and the detail
+        // panel would never open for featured cards.
+        var key = (p && (p.repository || p.id)) || ''
+        var curKey = (detail && (detail.repository || detail.id)) || ''
+        if (key && key === curKey) {
           setSelected(null); setInstallPkg(''); setOpMsg(''); setRecog(null)
           return
         }
@@ -955,7 +965,13 @@ window.__ModuleLoader__.load({
       var detail = null
       if (selected) {
         var detailSrc = viewTab === 'featured' ? featuredRows : plugins
-        detail = detailSrc.filter(function (p) { return p === selected || p.repository === selected || p.id === selected })[0] || null
+        // Match by identity field (repository/id) — object references go stale
+        // for featured cards (featuredRows is rebuilt every render), which
+        // previously made the side panel never open for them.
+        var selKey = (selected && (selected.repository || selected.id)) || ''
+        detail = detailSrc.filter(function (p) {
+          return (p === selected) || (selKey && ((p.repository === selKey) || (p.id === selKey)))
+        })[0] || null
       }
 
       // When a plugin detail opens, fetch the repo's README and RECOGNIZE the
@@ -1120,7 +1136,7 @@ window.__ModuleLoader__.load({
                     !featured ? el('div', { key: 'loading', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) }, '正在加载精选…')
                       : !featuredRows.length ? el('div', { key: 'empty', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) }, '未获取到精选插件：网络不可用')
                       : featuredRows.map(function (p) {
-                          return el(MarketCard, { key: (p.repository || p.id), p: p, status: installedFor(p.repository), selected: detail === p,
+                          return el(MarketCard, { key: (p.repository || p.id), p: p, status: installedFor(p.repository), selected: detail === p || !!((detail && p) && ((detail.repository && detail.repository === p.repository) || (detail.id && detail.id === p.id))),
                             onSelect: selectPlugin, featured: true })
                         })),
                   detail ? el(MarketDetail, { key: 'detail', p: detail, installed: installedFor(detail.repository),
@@ -1137,7 +1153,7 @@ window.__ModuleLoader__.load({
                   : !plugins.length ? el('div', { key: 'empty', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) }, '未获取到插件：网络不可用或本地缓存为空，可点击右上角「刷新」重试')
                   : !rows.length ? el('div', { key: 'no', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) }, '没有匹配的插件')
                   : rows.map(function (p) {
-                    return el(MarketCard, { key: (p.repository || p.id), p: p, status: installedFor(p.repository), selected: detail === p,
+                    return el(MarketCard, { key: (p.repository || p.id), p: p, status: installedFor(p.repository), selected: detail === p || !!((detail && p) && ((detail.repository && detail.repository === p.repository) || (detail.id && detail.id === p.id))),
                       onSelect: selectPlugin })
                   })),
               detail ? el(MarketDetail, { key: 'detail', p: detail, installed: installedFor(detail.repository),
