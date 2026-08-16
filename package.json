@@ -1,6 +1,6 @@
 {
   "name": "@dshd/dshdesktop-client",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "DSH Desktop client 插件（sidebar.footer.action 市场入口 + settings.section 环境检查与设置）。",
   "license": "MIT",
   "type": "module",
