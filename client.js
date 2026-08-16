@@ -42,6 +42,58 @@ window.__ModuleLoader__.load({
       try { console.log('[dshdesktop] ' + msg) } catch (e) { /* noop */ }
     }
 
+    // ------------------------------------------------------- version contract
+    //
+    // The client plugin and the DSH Desktop exe share a bridge protocol that
+    // CHANGED in 0.1.5 (saveConfig/restart now return JSON objects, readmeInstall
+    // returns a structured recognition result). A client on an older exe would
+    // misbehave (save shows a bogus failure), so this client build REQUIRES the
+    // exe to be at least REQUIRED_EXE_VERSION. The check lives HERE (client side)
+    // on purpose: a future client update that does not need new bridge features
+    // can keep REQUIRED_EXE_VERSION low and stay compatible with old exes —
+    // only when the client truly needs a new exe capability does it bump this.
+    //
+    // Keep CLIENT_VERSION in sync with package.json version.
+    var CLIENT_VERSION = '0.1.5'
+    var REQUIRED_EXE_VERSION = '0.1.5'
+
+    // versionGate: {status:'checking'|'ok'|'mismatch', exeVersion, releasesUrl}
+    // Started at plugin load; read by the UI components at render time.
+    var versionGate = { status: 'checking', exeVersion: '', releasesUrl: '' }
+
+    function compareVersions(a, b) {
+      var pa = String(a || '').trim().replace(/^v/i, '').split('.')
+      var pb = String(b || '').trim().replace(/^v/i, '').split('.')
+      for (var i = 0; i < Math.max(pa.length, pb.length); i++) {
+        var va = parseInt(pa[i] || '0', 10)
+        var vb = parseInt(pb[i] || '0', 10)
+        if (va !== vb) return va < vb ? -1 : 1
+      }
+      return 0
+    }
+
+    function startVersionCheck() {
+      // getAbout returns {version, releasesUrl, ...}; a missing bridge (plain
+      // browser, no host object) means no exe to check against — treat as ok
+      // so the plugin still renders its UI in a plain browser context.
+      callJson('getAbout').then(function (about) {
+        if (!about || !about.version) {
+          versionGate = { status: 'ok', exeVersion: '', releasesUrl: '' }
+          LOG('version gate: no exe info, ok')
+          return
+        }
+        var exeVer = String(about.version)
+        var ok = compareVersions(exeVer, REQUIRED_EXE_VERSION) >= 0
+        versionGate = {
+          status: ok ? 'ok' : 'mismatch',
+          exeVersion: exeVer,
+          releasesUrl: about.releasesUrl || '',
+        }
+        LOG('version gate: exe=' + exeVer + ' required=' + REQUIRED_EXE_VERSION + ' -> ' + versionGate.status)
+      })
+    }
+
+
     // children-safe element factory: puts `children` into props.children.
     function el(type, props, children) {
       if (children === undefined) return jsx(type, props)
@@ -757,6 +809,34 @@ window.__ModuleLoader__.load({
         })
       }, [detail ? detail.repository : ''])
 
+      // Version gate: a client/exe mismatch disables the whole market — show
+      // the incompatibility warning instead of the panel ("不允许不匹配").
+      if (versionGate.status === 'mismatch') {
+        return el('div', {
+          style: {
+            position: 'relative', zIndex: '1', width: '640px', maxWidth: 'calc(100vw - 48px)',
+            boxSizing: 'border-box', borderRadius: '16px', padding: '24px',
+            background: 'var(--dsw-alias-bg-layer-2, #ffffff)',
+            boxShadow: 'var(--dsw-shadow-lv3, 0 8px 40px rgba(0,0,0,0.25))',
+            color: 'var(--dsw-alias-label-primary, #202124)', font: 'inherit', fontSize: '13px', lineHeight: '20px',
+            display: 'flex', flexDirection: 'column', gap: '12px',
+          },
+        }, [
+          el('div', { key: 't', style: { fontWeight: 600, fontSize: '15px', color: '#b45409' } }, '⚠️ 版本不兼容'),
+          el('div', { key: 'd', style: { color: 'var(--dsw-alias-label-secondary, #4b5563)' } },
+            '当前 DSH Desktop ' + (versionGate.exeVersion || '?') + ' 过旧。' +
+            '插件 @dshd/dshdesktop-client v' + CLIENT_VERSION +
+            ' 需要 DSH Desktop ≥ ' + REQUIRED_EXE_VERSION + '（桥协议已更新），' +
+            '插件市场功能已停用。'),
+          versionGate.releasesUrl
+            ? el('button', { key: 'up', type: 'button',
+                onClick: function () { openExternalRepo(versionGate.releasesUrl) },
+                style: Object.assign({}, BTN, { alignSelf: 'flex-start', color: '#fff', background: '#b45409', borderColor: '#b45409' }) },
+              '去升级 DSH Desktop')
+            : null,
+        ])
+      }
+
       return el('div', {
         style: {
           // Centered modal panel, mirroring the dsh settings modal.
@@ -1037,6 +1117,60 @@ window.__ModuleLoader__.load({
     // module-scope timer handle so the ball can clear its own auto-hide
     InstallBall._hideTimer = null
 
+    // ------------------------------------------------- version mismatch banner
+
+    // Shown (fixed top strip) when the exe is too old for this client build.
+    // The plugin refuses to register its UI in that case — "不允许 client 与
+    // 客户端版本不匹配" — and this banner is the ONLY thing rendered, with a
+    // direct upgrade link. Re-renders when versionGate changes.
+    function VersionBanner() {
+      var [gate, setGate] = useState(versionGate)
+      // in-memory dismiss only — deliberately NOT persisted, so the banner
+      // pops up again on every startup while the mismatch lasts.
+      var [dismissed, setDismissed] = useState(false)
+      useEffect(function () {
+        var t = setInterval(function () {
+          if (versionGate.status === 'checking') return
+          setGate(versionGate)
+          clearInterval(t)
+        }, 200)
+        return function () { clearInterval(t) }
+      }, [])
+      if (!gate || gate.status !== 'mismatch' || dismissed) return null
+      return el('div', {
+        style: {
+          position: 'fixed', top: '0', left: '0', right: '0', zIndex: '2147483000',
+          background: '#b45409', color: '#fff', padding: '10px 16px',
+          display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap',
+          font: 'inherit', fontSize: '13px', lineHeight: '18px',
+          boxShadow: '0 2px 12px rgba(0,0,0,.3)',
+        },
+      }, [
+        el('span', { key: 't', style: { flex: '1 1 auto', minWidth: '0' } },
+          '⚠️ 版本不兼容：当前 DSH Desktop ' + (gate.exeVersion || '?') +
+          ' 过旧，插件 @dshd/dshdesktop-client v' + CLIENT_VERSION +
+          ' 需要 DSH Desktop ≥ ' + REQUIRED_EXE_VERSION +
+          '（桥协议已更新）。插件功能已停用，请升级 DSH Desktop。'),
+        gate.releasesUrl
+          ? el('button', { key: 'up', type: 'button', onClick: function () { openExternalRepo(gate.releasesUrl) },
+              style: {
+                border: '1px solid rgba(255,255,255,.7)', borderRadius: '8px',
+                background: 'transparent', color: '#fff', cursor: 'pointer',
+                padding: '4px 12px', font: 'inherit', fontSize: '12px', flex: '0 0 auto',
+              } }, '去升级')
+          : null,
+        el('button', {
+          key: 'x', type: 'button', onClick: function () { setDismissed(true) },
+          title: '关闭（下次启动仍会提示）',
+          style: {
+            border: 'none', background: 'transparent', color: '#fff', cursor: 'pointer',
+            fontSize: '18px', lineHeight: '1', padding: '0 6px', flex: '0 0 auto',
+            opacity: '.85',
+          },
+        }, '×'),
+      ])
+    }
+
     var overlayRoot = null
     function ensureOverlay() {
       try {
@@ -1052,6 +1186,12 @@ window.__ModuleLoader__.load({
         document.body.appendChild(el1)
         var ballRoot = createRoot(el1)
         ballRoot.render(el(InstallBall, {}))
+        // third root: version-mismatch banner (independent, always mounted)
+        var el2 = document.createElement('div')
+        el2.id = 'dshdesktop-version-banner'
+        document.body.appendChild(el2)
+        var bannerRoot = createRoot(el2)
+        bannerRoot.render(el(VersionBanner, {}))
       } catch (e) { LOG('overlay mount failed ' + e) }
     }
 
@@ -1295,6 +1435,29 @@ window.__ModuleLoader__.load({
           ])
         : null
 
+      // Version gate: mismatched exe → show the warning instead of the section.
+      if (versionGate.status === 'mismatch') {
+        return el('div', {
+          style: { display: 'flex', flexDirection: 'column', gap: '12px', padding: '4px 0 12px' },
+        }, [
+          el('div', { key: 'head', style: { display: 'flex', alignItems: 'center', gap: '8px' } }, [
+            el(MarketGlyph, { key: 'i', size: 16 }),
+            el('strong', { key: 't' }, 'DSH Desktop'),
+          ]),
+          el('div', { key: 'warn', style: {
+            border: '1px solid rgba(180,84,9,.5)', borderRadius: '12px', padding: '12px',
+            color: '#b45409', fontSize: '13px', lineHeight: '20px',
+            display: 'flex', flexDirection: 'column', gap: '8px',
+          } }, [
+            el('div', { key: 't' }, '⚠️ 版本不兼容：当前 DSH Desktop ' + (versionGate.exeVersion || '?') +
+              ' 过旧，插件需要 DSH Desktop ≥ ' + REQUIRED_EXE_VERSION + '，功能已停用。'),
+            versionGate.releasesUrl
+              ? el('button', { key: 'up', type: 'button', style: BTN2, onClick: function () { openUrl(versionGate.releasesUrl) } }, '去升级')
+              : null,
+          ]),
+        ])
+      }
+
       return el('div', {
         style: { display: 'flex', flexDirection: 'column', gap: '12px', padding: '4px 0 12px' },
       }, [
@@ -1335,6 +1498,12 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       var slots = ctx.slots
       LOG('apply: slots=' + (!!slots))
+      // Version gate: start the exe-version check immediately. Every UI entry
+      // (footer button / settings section / market panel) renders a version-
+      // mismatch warning instead of its functionality when the exe is too old
+      // (see versionGate), and the fixed top banner (VersionBanner) shows too —
+      // so a mismatched client/exe pair cannot be used ("不允许不匹配").
+      startVersionCheck()
       ensureOverlay()
       ensureStyles()
 
