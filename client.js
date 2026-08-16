@@ -515,9 +515,15 @@ window.__ModuleLoader__.load({
         ]),
         el('span', { key: 'st', style: Object.assign({}, PILL, p.enabled ? { color: '#1f9d55', borderColor: 'rgba(31,157,85,.45)' } : { color: '#b45409', borderColor: 'rgba(180,84,9,.45)' }) },
           p.enabled ? '已启用' : '已禁用'),
-        upd && upd.hasUpdate ? el('span', { key: 'upd', style: Object.assign({}, PILL, { color: '#b45409', borderColor: 'rgba(180,84,9,.45)' }) },
+        upd && upd.hasUpdate && !upd.managed ? el('span', { key: 'upd', style: Object.assign({}, PILL, { color: '#b45409', borderColor: 'rgba(180,84,9,.45)' }) },
           '有更新 v' + upd.latest) : null,
-        upd && upd.hasUpdate ? el('button', { key: 'u', type: 'button', disabled: props.busy, onClick: function () { props.onUpdate(p.name) }, style: Object.assign({}, BTN, { color: '#1f9d55' }) }, '更新') : null,
+        upd && upd.hasUpdate && !upd.managed ? el('button', { key: 'u', type: 'button', disabled: props.busy, onClick: function () { props.onUpdate(p.name) }, style: Object.assign({}, BTN, { color: '#1f9d55' }) }, '更新') : null,
+        // Managed (protected) packages: the exe owns the version — npm latest
+        // is NOT what gets installed (it realigns to the exe's required
+        // version), so an update pill would be misleading. Explain instead.
+        upd && upd.managed
+          ? el('span', { key: 'mng', title: '内置插件版本由 DSH Desktop 自动匹配（当前 ' + (upd.current || '?') + (upd.latest ? '，npm 最新 ' + upd.latest : '') + '），无需手动更新', style: Object.assign({}, MUTED, { fontSize: '11px' }) }, '版本由 DSH Desktop 管理')
+          : null,
         // Built-in DSH Desktop plugins (protected) get NO operations at all —
         // they cannot be disabled or removed (disabling would drop the client
         // patch and break the whole panel). Show the built-in badge only.
@@ -557,6 +563,7 @@ window.__ModuleLoader__.load({
       var [selected, setSelected] = useState(null)
       var [installed, setInstalled] = useState([])  // [{name, version, enabled, activation}]
       var [updates, setUpdates] = useState(null)    // {name: {hasUpdate, latest}}
+      var [updChecking, setUpdChecking] = useState(false)  // 检查更新 spinner
       var [busy, setBusy] = useState(false)
       var [installPkg, setInstallPkg] = useState('')
       var [opMsg, setOpMsg] = useState('')
@@ -726,7 +733,9 @@ window.__ModuleLoader__.load({
       }
       function checkUpdates() {
         setOpMsg('检查更新中…')
+        setUpdChecking(true)
         bridgeCall('pluginUpdates').then(function (r) {
+          setUpdChecking(false)
           var map = {}
           if (r && Array.isArray(r.updates)) {
             r.updates.forEach(function (u) { if (u && u.name) map[u.name] = u })
@@ -734,6 +743,9 @@ window.__ModuleLoader__.load({
           setUpdates(map)
           var any = Object.keys(map).filter(function (k) { return map[k].hasUpdate }).length
           setOpMsg(any ? '发现 ' + any + ' 个插件有更新' : '所有插件均为最新')
+        }, function () {
+          setUpdChecking(false)
+          setOpMsg('更新检查失败')
         })
       }
       function restartServer() {
@@ -885,8 +897,11 @@ window.__ModuleLoader__.load({
         el('div', { key: 'body', style: { flex: '1 1 auto', minHeight: '0', display: 'flex', gap: '12px', padding: '12px 16px', overflow: 'hidden' } },
           viewTab === 'installed'
             ? el('div', { key: 'instwrap', style: { flex: '1 1 auto', minWidth: '0', display: 'flex', flexDirection: 'column', gap: '8px', minHeight: '0' } }, [
-                el('div', { key: 'actions', style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
-                  el('button', { key: 'chk', type: 'button', disabled: busy, onClick: checkUpdates, style: BTN }, '检查更新'),
+                el('div', { key: 'actions', style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } }, [
+                  updChecking
+                    ? el('span', { key: 'chk', style: { display: 'inline-flex', gap: '6px', alignItems: 'center', color: 'var(--dsw-alias-text-muted,#8a8f98)', fontSize: '12px' } },
+                        el('span', { key: 'sp', className: 'dshd-spinner' }), '检查更新中…')
+                    : el('button', { key: 'chk', type: 'button', disabled: busy, onClick: checkUpdates, style: BTN }, '检查更新'),
                   el('button', { key: 'restart', type: 'button', disabled: busy, onClick: restartServer, style: BTN }, '立即重启'),
                 ]),
                 el('div', { key: 'instlist', style: { flex: '1 1 auto', minWidth: '0', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' } },
@@ -1222,6 +1237,13 @@ window.__ModuleLoader__.load({
           '.dshd-btn:hover{transform:scale(1.04);background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.05))}' +
           '.dshd-btn:active{transform:scale(.97);background:var(--dsw-alias-interactive-bg-active,rgba(0,0,0,.10))}' +
           '.dshd-btn:disabled{opacity:.55;cursor:not-allowed;transform:none}' +
+          // Collapse model reasoning in the conversation: while the Think row
+          // is closed, hide its summary text so only the final answer shows.
+          // The row stays clickable — the full reasoning is one click away.
+          '[data-variant="think"] [data-disclosure-row][aria-expanded="false"] > span:last-child{display:none}' +
+          // …and once the reply is done, also tuck the Think row itself to a
+          // single quiet line (no separator, no summary, no sweep animation).
+          '[data-variant="think"][data-state="ok"] [data-disclosure-row] > span:nth-child(3){display:none}' +
           '[class*="footerActions"]{flex-direction:column}'
         document.head.appendChild(st)
       } catch (e) { /* best effort */ }
@@ -1309,6 +1331,9 @@ window.__ModuleLoader__.load({
           setUpdLoading(false)
           if (v) setUpd(v)
           else setUpd({ error: '无响应' })
+        }, function () {
+          setUpdLoading(false)
+          setUpd({ error: '无响应' })
         })
       }
 
@@ -1366,7 +1391,10 @@ window.__ModuleLoader__.load({
 
       var updateArea
       if (updLoading) {
-        updateArea = el('span', { key: 'ul', style: MUTED2 }, '检查中…')
+        updateArea = el('span', { key: 'ul', style: { display: 'inline-flex', gap: '6px', alignItems: 'center', color: 'var(--dsw-alias-text-muted,#8a8f98)' } }, [
+          el('span', { key: 'sp', className: 'dshd-spinner' }),
+          '检查中…',
+        ])
       } else if (upd && upd.error) {
         updateArea = el('span', { key: 'ue', style: { color: '#b45409', fontSize: '12px' } }, '更新检查失败')
       } else if (upd && upd.hasUpdate) {
