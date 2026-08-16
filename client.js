@@ -61,6 +61,13 @@ window.__ModuleLoader__.load({
     // Started at plugin load; read by the UI components at render time.
     var versionGate = { status: 'checking', exeVersion: '', releasesUrl: '' }
 
+    // handToAI(plugin): set by apply() once ctx.sessions is available; used by
+    // the market detail's "让 AI 处理" button (beside 打开仓库). Fetches the
+    // plugin README to a temp file (bridge readmeToFile) and submits it to the
+    // current session's agent, which reads the README and installs/manages the
+    // plugin itself.
+    var dshdHandToAI = null
+
     function compareVersions(a, b) {
       var pa = String(a || '').trim().replace(/^v/i, '').split('.')
       var pb = String(b || '').trim().replace(/^v/i, '').split('.')
@@ -314,6 +321,16 @@ window.__ModuleLoader__.load({
       cursor: 'pointer', font: 'inherit', fontSize: '12px',
     }
 
+    // Deterministic avatar-fallback color from a name (GitHub-style hash):
+    // the same owner always gets the same pleasant hue.
+    function avatarColor(name) {
+      var s = String(name || '')
+      var h = 0
+      for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+      var hue = h % 360
+      return 'hsl(' + hue + ', 55%, 48%)'
+    }
+
     // -------------------------------------------------- install recognition
 
     // Module-level helpers for the detail-panel install box. The box NEVER
@@ -360,24 +377,33 @@ window.__ModuleLoader__.load({
     function installInputDisabled(recog) {
       var s = recogState(recog)
       if (s.loading) return true
-      // Recognized as a NON-directly-installable thing (skill / global CLI /
-      // MCP / desktop app / repository-plugin / other profile): `dsh plugin
-      // add` cannot install it, so lock the box and explain. `none` and
-      // `error` stay EDITABLE so the user can type a package name manually.
+      // A skill repo installs by fetching SKILL.md — no package name needed,
+      // so the box is locked but the 安装 button stays active (skill path).
+      if (s.done && s.result && s.result.kind === 'skill') return true
+      // Recognized as a NON-directly-installable thing (global CLI / MCP /
+      // desktop app / repository-plugin / other profile): `dsh plugin add`
+      // cannot install it, so lock the box and explain. `none` and `error`
+      // stay EDITABLE so the user can type a package name manually.
       if (s.done && s.result && s.result.recognized && !s.direct) return true
       return false
     }
     function installButtonDisabled(recog) {
+      // A skill is installable through the skill path — the button stays
+      // enabled for kind==='skill' (the onClick routes to skillInstall).
+      var s = recogState(recog)
+      if (s.done && s.result && s.result.kind === 'skill') return false
       return installInputDisabled(recog)
     }
     function installPlaceholder(recog) {
       var s = recogState(recog)
       if (s.loading) return '正在识别安装方式…'
+      if (s.done && s.result && s.result.kind === 'skill') return '技能仓库：点击「安装」直接安装为技能'
       if (s.done && s.direct) return 'dsh plugin --profile web add <包名>'
       return '手动输入包名或完整安装命令'
     }
     // Hint text + color per recognition state: direct → green, recognized
-    // but not installable → orange, none → muted, error → red.
+    // but not installable → orange, none → muted, error → red. skill → green
+    // (installable through the skill path).
     function installHint(recog) {
       var s = recogState(recog)
       if (s.loading) {
@@ -387,6 +413,9 @@ window.__ModuleLoader__.load({
         return { color: 'var(--dsw-alias-label-tertiary, #6b7684)', text: '选择插件后自动识别安装方式', spinner: false }
       }
       var r = s.result
+      if (r.kind === 'skill') {
+        return { color: '#1f9d55', text: '识别为技能仓库（SKILL.md），点击「安装」将安装为技能', spinner: false }
+      }
       var color = s.direct ? '#1f9d55'
         : r.kind === 'none' ? 'var(--dsw-alias-label-tertiary, #6b7684)'
         : r.kind === 'error' ? '#c0392b'
@@ -397,6 +426,12 @@ window.__ModuleLoader__.load({
     function MarketCard(props) {
       var p = props.p
       var [hover, setHover] = useState(false)
+      var [avatarErr, setAvatarErr] = useState(false)
+      var stars = p.stars == null ? 0 : p.stars
+      // Author fallback: owner field from GitHub, else the repository's owner
+      // segment (owner/repo → owner). Seeds may carry neither — hide the row.
+      var owner = p.owner || ((p.repository || '').split('/')[0]) || ''
+      var isFeatured = !!props.featured
       return el('button', {
         type: 'button',
         onClick: function () { props.onSelect(p) },
@@ -405,21 +440,46 @@ window.__ModuleLoader__.load({
         style: {
           textAlign: 'left', width: '100%', boxSizing: 'border-box',
           border: props.selected
-            ? '1px solid var(--dsw-alias-border-strong, #b0b7c3)'
-            : '1px solid var(--dsw-alias-border-default, #e5e7eb)',
-          borderRadius: '10px', padding: '10px 12px', cursor: 'pointer',
-          background: hover ? 'var(--dsw-alias-interactive-bg-hover, rgb(0 0 0 / 4%))' : 'transparent',
-          color: 'inherit', font: 'inherit',
+            ? '1px solid var(--dsw-alias-accent-strong, #4d6bfe)'
+            : isFeatured
+              ? '1px solid rgba(197,164,104,.55)'
+              : '1px solid var(--dsw-alias-border-default, #e5e7eb)',
+          borderRadius: '12px', padding: '10px 12px', cursor: 'pointer',
+          background: hover
+            ? 'var(--dsw-alias-interactive-bg-hover, rgb(0 0 0 / 4%))'
+            : isFeatured ? 'linear-gradient(180deg, rgba(255,214,102,.10), transparent 60%)' : 'transparent',
+          boxShadow: hover ? '0 2px 10px rgba(0,0,0,.08)' : 'none',
+          transition: 'box-shadow 140ms ease, background 140ms ease',
+          color: 'inherit', font: 'inherit', position: 'relative',
         },
       }, [
+        // "精选" ribbon for featured cards
+        isFeatured ? el('span', { key: 'ribbon', style: {
+          position: 'absolute', top: '-1px', right: '10px',
+          background: 'linear-gradient(135deg, #ffd666, #f5a623)',
+          color: '#5c4300', fontSize: '10px', lineHeight: '16px', fontWeight: 700,
+          padding: '0 8px', borderRadius: '0 0 8px 8px',
+        } }, '精选') : null,
         el('div', { key: 'h', style: { display: 'flex', alignItems: 'center', gap: '8px' } }, [
           el('strong', { key: 't', style: { fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1 1 auto', minWidth: '0' } },
             p.title || p.repository),
-          el('span', { key: 's', style: Object.assign({}, MUTED, { flex: '0 0 auto', fontSize: '12px' }) },
-            '★ ' + String(p.stars == null ? 0 : p.stars)),
+          // Yellow star (GitHub gold), with count — big enough to read
+          el('span', { key: 's', style: { flex: '0 0 auto', fontSize: '14px', color: '#f5a623', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '3px', lineHeight: '1' } },
+            [el('span', { key: 'ic', style: { fontSize: '16px', lineHeight: '1' } }, '★'), String(stars)]),
         ]),
+        // Author row: avatar + owner id (hidden when neither exists)
+        owner ? el('div', { key: 'a', style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '3px' } }, [
+          (p.ownerAvatar && !avatarErr)
+            ? el('img', { key: 'av', src: p.ownerAvatar, alt: '',
+                onError: function () { setAvatarErr(true) },
+                referrerPolicy: 'no-referrer',
+                style: { width: '16px', height: '16px', borderRadius: '50%', flex: '0 0 auto', background: 'var(--dsw-alias-interactive-bg-hover, rgb(0 0 0 / 6%))' } })
+            : el('span', { key: 'avp', style: { width: '16px', height: '16px', borderRadius: '50%', flex: '0 0 auto', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: avatarColor(owner), color: '#fff', fontSize: '9px', fontWeight: 700 } },
+                String(owner).charAt(0).toUpperCase()),
+          el('span', { key: 'on', style: Object.assign({}, MUTED, { fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: '0' }) }, owner),
+        ]) : null,
         p.description ? el('p', { key: 'd', style: { margin: '4px 0 0', color: 'var(--dsw-alias-label-secondary, #4b5563)', fontSize: '12px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, p.description) : null,
-        el('div', { key: 'c', style: { marginTop: '4px', display: 'flex', flexWrap: 'wrap' } }, [
+        el('div', { key: 'c', style: { marginTop: '4px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px' } }, [
           el('span', { key: 'cat', style: Object.assign({}, PILL, { borderColor: 'var(--dsw-alias-border-strong, #b0b7c3)' }) }, p.category || 'other'),
           props.status ? el('span', { key: 'st', style: Object.assign({}, PILL, props.status.enabled
             ? { color: '#1f9d55', borderColor: 'rgba(31,157,85,.45)' }
@@ -475,9 +535,26 @@ window.__ModuleLoader__.load({
                   disabled: installInputDisabled(props.recog),
                   onChange: function (e) { props.onInstallPkg(e.target.value) },
                   style: { flex: '1 1 180px', minWidth: '160px', border: '1px solid var(--dsw-alias-border-default, #d8dde3)', borderRadius: '8px', padding: '4px 8px', background: 'transparent', color: 'inherit', font: 'inherit' } }),
-                el('button', { key: 'install', type: 'button', disabled: props.busy || installButtonDisabled(props.recog), onClick: function () { props.onInstall(props.installPkg) }, style: { minHeight: '28px', padding: '0 12px', border: '1px solid #1f9d55', borderRadius: '8px', background: '#1f9d55', color: '#fff', cursor: 'pointer', font: 'inherit', fontSize: '12px' } }, props.busy ? '处理中…' : '安装'),
+                // Unified install button: routes by recognition — a skill repo
+                // (kind 'skill') installs through the skill path, everything
+                // else through the plugin path.
+                el('button', { key: 'install', type: 'button',
+                  disabled: props.busy || props.skillBusy || installButtonDisabled(props.recog),
+                  onClick: function () {
+                    var s = recogState(props.recog)
+                    if (s.done && s.result && s.result.kind === 'skill') {
+                      if (props.onSkillInstall) props.onSkillInstall(p.repository)
+                    } else {
+                      props.onInstall(props.installPkg)
+                    }
+                  },
+                  style: { minHeight: '28px', padding: '0 12px', border: '1px solid #1f9d55', borderRadius: '8px', background: '#1f9d55', color: '#fff', cursor: 'pointer', font: 'inherit', fontSize: '12px' } },
+                  props.busy || props.skillBusy ? '处理中…'
+                    : (function () { var s = recogState(props.recog); return s.done && s.result && s.result.kind === 'skill' ? '安装为技能' : '安装' })()),
               ],
           el('button', { key: 'repo', type: 'button', onClick: function () { openExternalRepo(p.url) }, style: BTN }, '打开仓库'),
+          el('button', { key: 'ai', type: 'button', disabled: props.aiBusy, onClick: function () { if (props.onHandToAI) props.onHandToAI(p) }, style: Object.assign({}, BTN, { color: 'var(--dsw-alias-accent-strong, #4d6bfe)', borderColor: 'var(--dsw-alias-accent-strong, #4d6bfe)' }) },
+            props.aiBusy ? '处理中…' : '让 AI 处理'),
         ]),
         !props.installed ? (function () {
           var hint = installHint(props.recog)
@@ -570,6 +647,16 @@ window.__ModuleLoader__.load({
       var [viewTab, setViewTab] = useState('featured')
       var [featured, setFeatured] = useState(null)  // {plugins, errors} from the curated seed catalog
       var [installProg, setInstallProg] = useState(null) // {package, phase, resolved, added, message}
+      // "让 AI 处理": which repo is currently being handed to the AI, and the
+      // outcome message ({text, ok} or null).
+      var [aiBusyRepo, setAiBusyRepo] = useState(null)
+      var [aiMsg, setAiMsg] = useState(null)
+      // Skills sub-tab (已安装 -> 技能): installed skill list, busy/op state.
+      var [skills, setSkills] = useState(null)        // {ok, dir, exists, skills:[...]} or null (loading)
+      var [skillBusy, setSkillBusy] = useState(false)
+      var [skillMsg, setSkillMsg] = useState(null)    // {text, ok} or null
+      // 已安装 page sub-tab: 'plugins' (installed plugins) | 'skills' (skills)
+      var [instSubTab, setInstSubTab] = useState('plugins')
       var lastActRef = useRef(null)   // ms timestamp of last progress change
       var [staleSec, setStaleSec] = useState(0)
       // Install-command recognition state for the detail panel:
@@ -770,6 +857,78 @@ window.__ModuleLoader__.load({
         setRecog({ status: 'loading' })
       }
 
+      // "让 AI 处理": hand the plugin to the current session's agent (see
+      // dshdHandToAI in apply). Shows a busy state on the card while the
+      // README is fetched + submitted, then a short result message.
+      function handToAI(plugin) {
+        if (!dshdHandToAI) {
+          setAiMsg({ text: '插件还没就绪，请稍后重试', ok: false })
+          return
+        }
+        var repo = (plugin && (plugin.repository || plugin.id)) || ''
+        setAiBusyRepo(repo)
+        setAiMsg(null)
+        dshdHandToAI(plugin).then(function (r) {
+          setAiBusyRepo(null)
+          setAiMsg(r && r.ok
+            ? { text: '已交给 AI：请在当前对话中查看安装结果', ok: true }
+            : { text: (r && r.error) || '操作失败', ok: false })
+        })
+      }
+
+      // ------------------------------------------------------ skills tab
+      // dsh skills are plain files under <dshHome>/skills; the C# bridge
+      // lists/installs/removes/toggles them (the filesystem provider watches
+      // the directory, so changes apply without restarting dsh).
+
+      function loadSkills() {
+        setSkills(null)
+        bridgeCall('skillList').then(function (r) {
+          setSkills(r || { ok: false, error: 'empty response' })
+        })
+      }
+
+      function installSkill(repo) {
+        var r = String(repo || '').trim()
+        if (!r) { setSkillMsg({ text: '缺少仓库地址', ok: false }); return }
+        setSkillBusy(true)
+        setSkillMsg(null)
+        bridgeCall('skillInstall', r).then(function (res) {
+          setSkillBusy(false)
+          if (res && res.ok) {
+            setSkillMsg({ text: '已安装为技能：' + (res.name || r) + '（' + (res.path || '') + '）', ok: true })
+            loadSkills()
+          } else {
+            setSkillMsg({ text: (res && (res.error || res.hint)) || '安装失败', ok: false })
+          }
+        })
+      }
+
+      function removeSkill(name) {
+        if (!window.confirm('确定删除技能「' + name + '」？')) return
+        setSkillBusy(true)
+        setSkillMsg(null)
+        bridgeCall('skillRemove', name).then(function (r) {
+          setSkillBusy(false)
+          setSkillMsg(r && r.ok
+            ? { text: '已删除：' + name, ok: true }
+            : { text: (r && r.error) || '删除失败', ok: false })
+          loadSkills()
+        })
+      }
+
+      function toggleSkill(name, key, on) {
+        setSkillBusy(true)
+        setSkillMsg(null)
+        bridgeCall('skillToggle', JSON.stringify({ name: name, key: key, on: on ? 1 : 0 })).then(function (r) {
+          setSkillBusy(false)
+          setSkillMsg(r && r.ok
+            ? { text: '已更新：' + name, ok: true }
+            : { text: (r && r.error) || '更新失败', ok: false })
+          loadSkills()
+        })
+      }
+
       var plugins = (state && state.plugins) || []
       // Featured rows: the local featured.json only lists `repo` (config), so
       // merge each entry with the fuller discovery data (stars/license/tags…)
@@ -783,7 +942,8 @@ window.__ModuleLoader__.load({
       })
       var q = search.trim().toLowerCase()
       var rows = plugins.filter(function (p) {
-        if (installedFor(p.repository)) return false  // installed plugins move to the 已安装 tab
+        // Installed plugins stay visible in 发现 (card shows a 已装 badge via
+        // props.status) — the user asked to keep them listed here.
         if (!q) return true
         var hay = [p.title, p.description, p.repository, (p.tags || []).join(' ')].join(' ').toLowerCase()
         return hay.indexOf(q) >= 0
@@ -882,7 +1042,7 @@ window.__ModuleLoader__.load({
             '精选'),
           el('button', { key: 'd', type: 'button', onClick: function () { setViewTab('discover'); setSelected(null) },
             style: { padding: '10px 12px', border: 'none', borderBottom: '2px solid ' + (viewTab === 'discover' ? 'var(--dsw-alias-accent-strong, #4d6bfe)' : 'transparent'), background: 'transparent', cursor: 'pointer', font: 'inherit', fontSize: '13px', color: viewTab === 'discover' ? 'var(--dsw-alias-accent-strong, #4d6bfe)' : 'var(--dsw-alias-label-secondary, #4b5563)', fontWeight: viewTab === 'discover' ? 600 : 400 } }, '发现'),
-          el('button', { key: 'i', type: 'button', onClick: function () { setViewTab('installed'); setSelected(null) },
+          el('button', { key: 'i', type: 'button', onClick: function () { setViewTab('installed'); setSelected(null); loadSkills() },
             style: { padding: '10px 12px', border: 'none', borderBottom: '2px solid ' + (viewTab === 'installed' ? 'var(--dsw-alias-accent-strong, #4d6bfe)' : 'transparent'), background: 'transparent', cursor: 'pointer', font: 'inherit', fontSize: '13px', color: viewTab === 'installed' ? 'var(--dsw-alias-accent-strong, #4d6bfe)' : 'var(--dsw-alias-label-secondary, #4b5563)', fontWeight: viewTab === 'installed' ? 600 : 400 } },
             '已安装 (' + installed.length + ')'),
         ]),
@@ -897,19 +1057,62 @@ window.__ModuleLoader__.load({
         el('div', { key: 'body', style: { flex: '1 1 auto', minHeight: '0', display: 'flex', gap: '12px', padding: '12px 16px', overflow: 'hidden' } },
           viewTab === 'installed'
             ? el('div', { key: 'instwrap', style: { flex: '1 1 auto', minWidth: '0', display: 'flex', flexDirection: 'column', gap: '8px', minHeight: '0' } }, [
-                el('div', { key: 'actions', style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } }, [
+                // Sub-tab: 插件 (installed plugins) | 技能 (skills), with the
+                // global 检查更新 / 立即重启 actions on the same row (both
+                // sub-tabs see them).
+                el('div', { key: 'sub', style: { display: 'flex', gap: '4px', alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-default, #e8e8e8)' } }, [
+                  el('button', { key: 'sp', type: 'button', onClick: function () { setInstSubTab('plugins') },
+                    style: { padding: '8px 12px', border: 'none', borderBottom: '2px solid ' + (instSubTab === 'plugins' ? 'var(--dsw-alias-accent-strong, #4d6bfe)' : 'transparent'), background: 'transparent', cursor: 'pointer', font: 'inherit', fontSize: '13px', color: instSubTab === 'plugins' ? 'var(--dsw-alias-accent-strong, #4d6bfe)' : 'var(--dsw-alias-label-secondary, #4b5563)', fontWeight: instSubTab === 'plugins' ? 600 : 400 } },
+                    '插件'),
+                  el('button', { key: 'ss', type: 'button', onClick: function () { setInstSubTab('skills'); loadSkills() },
+                    style: { padding: '8px 12px', border: 'none', borderBottom: '2px solid ' + (instSubTab === 'skills' ? 'var(--dsw-alias-accent-strong, #4d6bfe)' : 'transparent'), background: 'transparent', cursor: 'pointer', font: 'inherit', fontSize: '13px', color: instSubTab === 'skills' ? 'var(--dsw-alias-accent-strong, #4d6bfe)' : 'var(--dsw-alias-label-secondary, #4b5563)', fontWeight: instSubTab === 'skills' ? 600 : 400 } },
+                    '技能'),
+                  el('span', { key: 'spacer', style: { flex: '1 1 auto' } }),
                   updChecking
                     ? el('span', { key: 'chk', style: { display: 'inline-flex', gap: '6px', alignItems: 'center', color: 'var(--dsw-alias-text-muted,#8a8f98)', fontSize: '12px' } },
                         el('span', { key: 'sp', className: 'dshd-spinner' }), '检查更新中…')
                     : el('button', { key: 'chk', type: 'button', disabled: busy, onClick: checkUpdates, style: BTN }, '检查更新'),
                   el('button', { key: 'restart', type: 'button', disabled: busy, onClick: restartServer, style: BTN }, '立即重启'),
                 ]),
-                el('div', { key: 'instlist', style: { flex: '1 1 auto', minWidth: '0', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' } },
-                  installed.length
-                    ? installed.map(function (p) {
-                        return el(InstalledRow, { key: p.name, p: p, busy: busy, updates: updates, onToggle: actionToggle, onRemove: actionRemove, onUpdate: actionUpdate })
-                      })
-                    : el('div', { key: 'empty', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) }, '还没有已安装插件，去「发现」标签安装')),
+                instSubTab === 'plugins'
+                  ? [
+                      el('div', { key: 'instlist', style: { flex: '1 1 auto', minWidth: '0', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' } },
+                        installed.length
+                          ? installed.map(function (p) {
+                              return el(InstalledRow, { key: p.name, p: p, busy: busy, updates: updates, onToggle: actionToggle, onRemove: actionRemove, onUpdate: actionUpdate })
+                            })
+                          : el('div', { key: 'empty', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) }, '还没有已安装插件，去「发现」标签安装')),
+                    ]
+                  : [
+                      // Install entry lives on the 发现 page (detail panel's
+                      // "安装为技能"); here only list + manage.
+                      el('div', { key: 'hint', style: Object.assign({}, MUTED, { fontSize: '11px', padding: '4px 2px' }) },
+                        '技能安装入口在「发现」页：打开插件详情 → 「安装为技能」（仅真正的 SKILL.md 技能仓库可安装）'),
+                      skillMsg ? el('div', { key: 'msg', style: { padding: '6px 12px', borderRadius: '8px', fontSize: '12px', color: skillMsg.ok ? '#1f9d55' : '#b45409', background: skillMsg.ok ? 'rgba(31,157,85,.08)' : 'rgba(180,84,9,.08)' } },
+                        (skillMsg.ok ? '✓ ' : '⚠ ') + skillMsg.text) : null,
+                      el('div', { key: 'list', style: { flex: '1 1 auto', minWidth: '0', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' } },
+                        !skills ? el('div', { key: 'loading', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) }, '正在加载技能…')
+                          : !(skills.skills && skills.skills.length) ? el('div', { key: 'empty', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) },
+                              '还没有技能。技能是放在 ' + (skills.dir || '<dshHome>/skills') + ' 下的 SKILL.md 文件，安装后自动生效')
+                          : skills.skills.map(function (s) {
+                              return el('div', { key: s.name, style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', border: '1px solid var(--dsw-alias-border-default, #e5e7eb)', borderRadius: '10px' } }, [
+                                el('div', { key: 'info', style: { flex: '1 1 auto', minWidth: '0', overflow: 'hidden' } }, [
+                                  el('div', { key: 'n', style: { fontWeight: 600, fontSize: '13px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, s.name),
+                                  el('div', { key: 'd', style: Object.assign({}, MUTED, { fontSize: '11px', marginTop: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }) },
+                                    s.description || '(无描述)'),
+                                ]),
+                                el('span', { key: 'm', style: Object.assign({}, PILL, s.modelInvocable ? { color: '#1f9d55', borderColor: 'rgba(31,157,85,.45)' } : { color: '#b45409', borderColor: 'rgba(180,84,9,.45)' }) },
+                                  s.modelInvocable ? '模型可用' : '模型隐藏'),
+                                el('span', { key: 'u', style: Object.assign({}, PILL, s.userInvocable ? { color: '#1f9d55', borderColor: 'rgba(31,157,85,.45)' } : { color: '#b45409', borderColor: 'rgba(180,84,9,.45)' }) },
+                                  s.userInvocable ? '用户可用' : '用户隐藏'),
+                                el('button', { key: 'tm', type: 'button', disabled: skillBusy, onClick: function () { toggleSkill(s.name, 'disable-model-invocation', s.modelInvocable) }, style: BTN },
+                                  s.modelInvocable ? '隐藏' : '显示'),
+                                el('button', { key: 'tu', type: 'button', disabled: skillBusy, onClick: function () { toggleSkill(s.name, 'user-invocable', !s.userInvocable) }, style: BTN },
+                                  s.userInvocable ? '隐藏' : '显示'),
+                                el('button', { key: 'rm', type: 'button', disabled: skillBusy, onClick: function () { removeSkill(s.name) }, style: Object.assign({}, BTN, { color: '#b45409' }) }, '删除'),
+                              ])
+                            })),
+                    ],
               ])
             : viewTab === 'featured'
               ? [
@@ -918,12 +1121,14 @@ window.__ModuleLoader__.load({
                       : !featuredRows.length ? el('div', { key: 'empty', style: Object.assign({}, MUTED, { padding: '32px 0', textAlign: 'center' }) }, '未获取到精选插件：网络不可用')
                       : featuredRows.map(function (p) {
                           return el(MarketCard, { key: (p.repository || p.id), p: p, status: installedFor(p.repository), selected: detail === p,
-                            onSelect: selectPlugin })
+                            onSelect: selectPlugin, featured: true })
                         })),
                   detail ? el(MarketDetail, { key: 'detail', p: detail, installed: installedFor(detail.repository),
                     busy: busy, installPkg: installPkg, opMsg: opMsg, recog: recog,
                     onInstallPkg: function (v) { setInstallPkg(v) },
                     onInstall: actionInstall, onRemove: actionRemove, onToggle: actionToggle,
+                    onHandToAI: handToAI, aiBusy: aiBusyRepo === (detail.repository || detail.id),
+                    onSkillInstall: installSkill, skillBusy: skillBusy,
                     onBack: function () { setSelected(null) } }) : null,
                 ]
               : [
@@ -939,10 +1144,14 @@ window.__ModuleLoader__.load({
                 busy: busy, installPkg: installPkg, opMsg: opMsg, recog: recog,
                 onInstallPkg: function (v) { setInstallPkg(v) },
                 onInstall: actionInstall, onRemove: actionRemove, onToggle: actionToggle,
+                onHandToAI: handToAI, aiBusy: aiBusyRepo === (detail.repository || detail.id),
+                onSkillInstall: installSkill, skillBusy: skillBusy,
                 onBack: function () { setSelected(null) } }) : null,
             ]),
         el('footer', { key: 'f', style: Object.assign({}, MUTED, { padding: '8px 16px', borderTop: '1px solid var(--dsw-alias-border-default, #e8e8e8)', fontSize: '11px' }) },
           '插件为 dsh profile 层插件：安装/移除/启用/禁用经 dsh plugin 命令落地，重启 dsh 后生效'),
+        aiMsg ? el('div', { key: 'aimsg', style: { padding: '8px 16px', borderTop: '1px solid var(--dsw-alias-border-default, #e8e8e8)', fontSize: '12px', color: aiMsg.ok ? '#1f9d55' : '#b45409' } },
+          (aiMsg.ok ? '✅ ' : '⚠️ ') + aiMsg.text) : null,
         (installProg && installProg.phase && installProg.phase !== 'done' && installProg.phase !== 'error')
           ? el('div', { key: 'prog', style: { padding: '10px 16px', borderTop: '1px solid var(--dsw-alias-border-default, #e8e8e8)', display: 'flex', flexDirection: 'column', gap: '8px' } }, [
               el('div', { key: 'bar', style: { position: 'relative', height: '4px', borderRadius: '2px', overflow: 'hidden', background: 'var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.06))' } },
@@ -1237,13 +1446,6 @@ window.__ModuleLoader__.load({
           '.dshd-btn:hover{transform:scale(1.04);background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.05))}' +
           '.dshd-btn:active{transform:scale(.97);background:var(--dsw-alias-interactive-bg-active,rgba(0,0,0,.10))}' +
           '.dshd-btn:disabled{opacity:.55;cursor:not-allowed;transform:none}' +
-          // Collapse model reasoning in the conversation: while the Think row
-          // is closed, hide its summary text so only the final answer shows.
-          // The row stays clickable — the full reasoning is one click away.
-          '[data-variant="think"] [data-disclosure-row][aria-expanded="false"] > span:last-child{display:none}' +
-          // …and once the reply is done, also tuck the Think row itself to a
-          // single quiet line (no separator, no summary, no sweep animation).
-          '[data-variant="think"][data-state="ok"] [data-disclosure-row] > span:nth-child(3){display:none}' +
           '[class*="footerActions"]{flex-direction:column}'
         document.head.appendChild(st)
       } catch (e) { /* best effort */ }
@@ -1535,6 +1737,58 @@ window.__ModuleLoader__.load({
       ensureOverlay()
       ensureStyles()
 
+      // ------------------------------------------------------ hand to AI
+      //
+      // "让 AI 处理": fetch the plugin's README(s) to a temp file via the
+      // bridge, then submit a prompt to the CURRENT session's agent asking it
+      // to read the file and install/manage the plugin. Uses the official
+      // SessionFace.prompt(content, mode) — the same path the composer uses.
+      // Resolves {ok:true} on acceptance; {ok:false, error} otherwise.
+      dshdHandToAI = function (plugin) {
+        var repo = (plugin && (plugin.repository || plugin.id)) || ''
+        return new Promise(function (resolve) {
+          if (!repo) return resolve({ ok: false, error: '插件缺少仓库地址' })
+          bridgeCall('readmeToFile', repo).then(function (r) {
+            if (!r || !r.ok) {
+              return resolve({ ok: false, error: (r && (r.error || r.hint)) || 'README 获取失败' })
+            }
+            try {
+              var sessions = ctx.sessions
+              var snap = sessions && sessions.list && sessions.list.getSnapshot
+                ? sessions.list.getSnapshot()
+                : null
+              var currentId = snap && snap.current
+              var binding = currentId ? sessions.binding(currentId) : null
+              var session = binding && binding.session
+              if (!session || typeof session.prompt !== 'function') {
+                return resolve({ ok: false, error: '当前没有打开的会话，请先打开一个对话再试' })
+              }
+              var text = '请查看这个插件的 README 文件，帮我分析它（不要执行任何安装操作）：\n' +
+                '- 插件：' + (plugin.title || plugin.repository || '') + '\n' +
+                '- 仓库：' + (plugin.repository || '') + '\n' +
+                '- README 文件：' + r.path + '\n\n' +
+                '请阅读 README（必要时也读同目录下的 README.zh.md），然后向我总结：\n' +
+                '1. 这是什么类型的包（dsh 插件 / skill / provider / 皮肤 / 普通 npm 包等）\n' +
+                '2. 正确的安装方式（dsh plugin add 的包名/源、是否需要 patch、是否有注意事项）\n' +
+                '3. 安装后如何启用/配置\n' +
+                '4. 你的安装建议（是否建议安装、有没有风险或额外依赖）\n\n' +
+                '【重要】现在只需要分析并给出结论，不要执行任何安装命令。' +
+                '等我确认要安装后，你再执行安装。如果它其实不是 dsh 插件，请明确说明它是什么、如何安装。'
+              session.prompt([{ type: 'text', text: text }], 'queue').then(function (res) {
+                if (res && res.ok && res.accepted) resolve({ ok: true, path: r.path })
+                else resolve({ ok: false, error: (res && res.error) ? String(res.error) : '消息发送失败' })
+              }, function (err) {
+                resolve({ ok: false, error: String(err) })
+              })
+            } catch (e) {
+              resolve({ ok: false, error: String(e) })
+            }
+          }, function () {
+            resolve({ ok: false, error: '桥接调用失败' })
+          })
+        })
+      }
+
       ctx.effect(function () {
         slots.inject('sidebar.footer.action', function () {
           LOG('footer.action declared, registering')
@@ -1603,7 +1857,6 @@ window.__ModuleLoader__.load({
       ctx.effect(function () {
         var sessions = ctx.sessions
         if (!sessions || typeof sessions.open !== 'function') {
-          LOG('ctxmenu effect skipped: sessions=' + (!!sessions) + ' open=' + (typeof (sessions && sessions.open)))
           return
         }
         var menuEl = null
@@ -1638,20 +1891,9 @@ window.__ModuleLoader__.load({
 
         function onContext(e) {
           closeMenu()
-          // ---- diagnostics (temporary): log what we see so a right-click on
-          // a session row can be debugged from app.log ----
-          try {
-            var snap0 = sessions.list && sessions.list.getSnapshot ? sessions.list.getSnapshot() : null
-            var ids0 = snap0 ? Object.keys(snap0.byId || {}).length : -1
-            var tgt = e.target
-            var tinfo = (tgt && tgt.tagName) + '.' + String((tgt && tgt.className) || '').slice(0, 40)
-            LOG('ctxmenu: sessions=' + (!!sessions) + ' open=' + (typeof (sessions && sessions.open)) +
-                ' ids=' + ids0 + ' target=' + tinfo)
-          } catch (err) { LOG('ctxmenu diag failed: ' + err) }
           // find the session row: the session list items are NOT button/a
-          // elements (diagnostics showed a SPAN.title inside a plain row), so
-          // walk up a few levels and match each ancestor's text against the
-          // session titles — the row that contains the title wins.
+          // elements, so walk up a few levels and match each ancestor's text
+          // against the session titles — the row that contains the title wins.
           var node = e.target
           var row = null
           var text = ''
@@ -1666,9 +1908,8 @@ window.__ModuleLoader__.load({
             node = node.parentNode
             depth++
           }
-          if (!row) { LOG('ctxmenu: no session row matched (text-based)'); return }
+          if (!row) return
           var session = sessionForText(text)
-          LOG('ctxmenu: row=' + (row.tagName || '') + ' text="' + String(text).slice(0, 30) + '" match=' + (session ? 'YES' : 'NO'))
           if (!session) return
           e.preventDefault()
           e.stopPropagation()
