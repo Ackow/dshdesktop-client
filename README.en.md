@@ -45,8 +45,20 @@ All capabilities communicate with the DSH Desktop main window through `chrome.we
 
 ![Settings: app intro + dshd config](assets/settings.png)
 
-- **App intro**: version (with a "check for updates" action), author, GitHub repository link
+- **App intro**: DSH Desktop version (with a "check for updates" action), author, GitHub repository link
+- **dsh version + update management**: shows the current dsh version and the latest one, with "Check for updates", "Update dsh", "View release notes" and "Restart dsh web" actions; the "View release notes" entry stays available even when up to date
 - **dshd config**: port / DSH_HOME / dsh entry / node / npx fallback / data directory / log directory / download proxy — all editable in one "Edit config" dialog; changing the data directory **auto-migrates old data**
+
+## dsh auto-update (top banner)
+
+The DSH Desktop exe checks for a newer dsh version in the background at startup (result is cached, so the banner/settings read it instantly). When an update is available, a dismissible banner appears at the top of the page:
+
+- "📦 dsh update available: current → latest" + "Release notes" + "Update now"
+- Real-time **progress** during the update (`npm install -g @deepseek-ai/dsh@latest`, via the `settings.NpmRegistry` mirror)
+- On success a "Restart dsh web" button appears; dismissing the banner is remembered per latest version, so it reappears only when an even newer version ships
+- The banner renders only inside dsh web (DSH Desktop main window); it hides automatically when there is no host bridge (plain browser)
+
+"View release notes / update log" pulls the notes from the official dsh GitHub Releases and renders them as Markdown in a modal (headings / lists / bold / code / links; language-switcher anchor lines are filtered; output is HTML-sanitized, only http/https/mailto links pass).
 
 ## Mechanics & data
 

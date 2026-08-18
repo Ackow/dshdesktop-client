@@ -54,8 +54,8 @@ window.__ModuleLoader__.load({
     // only when the client truly needs a new exe capability does it bump this.
     //
     // Keep CLIENT_VERSION in sync with package.json version.
-    var CLIENT_VERSION = '0.1.6'
-    var REQUIRED_EXE_VERSION = '0.1.5'
+    var CLIENT_VERSION = '0.1.7'
+    var REQUIRED_EXE_VERSION = '0.1.6'
 
     // versionGate: {status:'checking'|'ok'|'mismatch', exeVersion, releasesUrl}
     // Started at plugin load; read by the UI components at render time.
@@ -1418,6 +1418,308 @@ window.__ModuleLoader__.load({
       ])
     }
 
+    // ------------------------------------------------ dsh update prompt banner
+
+    // Fixed top banner prompting that a NEWER dsh (DeepSeek Harness) is
+    // available (checked by the exe at startup + on demand via the
+    // `dshdesktop` host object). Dismissible — the dismissal is persisted per
+    // latest version (localStorage), so a later NEWER version brings the
+    // banner back. While an update installs, the banner shows live progress
+    // (dshUpdateProgress) and offers a restart once done.
+    function DshUpdateBanner() {
+      var [info, setInfo] = useState(null)   // {current, latest, hasUpdate, source, ok, error}
+      var [busy, setBusy] = useState(false)  // an update install is running
+      var [prog, setProg] = useState(null)   // {phase, message} during/after install
+      var [showNotes, setShowNotes] = useState(false)  // changelog modal
+      var [dismissedVer, setDismissedVer] = useState(
+        (function () { try { return localStorage.getItem('dshd-dsh-update-dismissed') || '' } catch (e) { return '' } })())
+
+      // Load the cached startup check immediately, then re-check once more in
+      // case the exe's background warmup was still in flight on first mount.
+      useEffect(function () {
+        var stopped = false
+        callJson('dshVersion', '0').then(function (v) { if (!stopped && v && v.hasUpdate) setInfo(v) })
+        var t = setTimeout(function () {
+          callJson('dshVersion', '0').then(function (v) { if (!stopped && v) setInfo(v) })
+        }, 3500)
+        return function () { stopped = true; clearTimeout(t) }
+      }, [])
+
+      // Poll install progress while an update runs; refresh info when done so
+      // the banner disappears on its own.
+      useEffect(function () {
+        if (!busy) return
+        var stopped = false
+        var timer = setInterval(function () {
+          callJson('dshUpdateProgress').then(function (v) {
+            if (stopped) return
+            if (v) setProg(v)
+            if (v && (v.phase === 'done' || v.phase === 'error')) {
+              clearInterval(timer)
+              setBusy(false)
+              if (v.phase === 'done') {
+                callJson('dshVersion', '1').then(function (nv) { if (!stopped && nv) setInfo(nv) })
+              }
+            }
+          })
+        }, 800)
+        return function () { stopped = true; clearInterval(timer) }
+      }, [busy])
+
+      function startUpdate() {
+        setBusy(true)
+        setProg({ phase: 'installing', message: '正在执行 npm install -g @deepseek-ai/dsh@latest …' })
+        callJson('updateDsh').then(function (r) {
+          if (!r || !r.started) {
+            setBusy(false)
+            setProg({ phase: 'error', message: (r && r.error) || '更新启动失败' })
+          }
+        })
+      }
+
+      function dismiss(latestVer) {
+        try { localStorage.setItem('dshd-dsh-update-dismissed', latestVer || '') } catch (e) { /* noop */ }
+        setDismissedVer(latestVer || '')
+      }
+
+      var active = busy || (prog && prog.phase === 'installing')
+      var doneOrErr = prog && (prog.phase === 'done' || prog.phase === 'error')
+      var prompt = info && info.hasUpdate && !active && !doneOrErr && info.latest !== dismissedVer
+      if (!prompt && !active && !doneOrErr) return null
+
+      var isErr = prog && prog.phase === 'error'
+      var isDone = prog && prog.phase === 'done'
+      // amber = actionable prompt / in-progress; red = failure; green = done
+      var bg = isErr ? '#b45409' : isDone ? '#1f9d55' : '#b45409'
+
+      return el('div', {
+        style: {
+          position: 'fixed', top: versionGate.status === 'mismatch' ? '54px' : '0',
+          left: '0', right: '0', zIndex: '2147482000',
+          background: bg, color: '#fff', padding: '9px 16px',
+          display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap',
+          font: 'inherit', fontSize: '13px', lineHeight: '18px',
+          boxShadow: '0 2px 12px rgba(0,0,0,.3)',
+        },
+      }, [
+        el('span', { key: 't', style: { flex: '1 1 auto', minWidth: '0' } },
+          prompt
+            ? '📦 dsh 可更新：当前 v' + (info.current || '?') + ' → 最新 v' + info.latest + '（更新后重启 dsh web 生效）'
+            : active
+              ? '⏳ 正在更新 dsh：' + ((prog && prog.message) || '安装中…')
+              : isDone
+                ? '✅ dsh 已更新到 v' + (info && info.latest) + '，重启 dsh web 后生效'
+                : '⚠️ dsh 更新失败：' + ((prog && prog.message) || '未知错误')),
+        prompt ? [
+          el('button', { key: 'notes', type: 'button', onClick: function () { setShowNotes(true) },
+            style: {
+              border: '1px solid rgba(255,255,255,.85)', borderRadius: '8px',
+              background: 'rgba(255,255,255,.14)', color: '#fff', cursor: 'pointer',
+              padding: '4px 12px', font: 'inherit', fontSize: '12px', flex: '0 0 auto',
+            } }, '更新内容'),
+          el('button', { key: 'up', type: 'button', onClick: startUpdate,
+            style: {
+              border: '1px solid rgba(255,255,255,.85)', borderRadius: '8px',
+              background: 'rgba(255,255,255,.14)', color: '#fff', cursor: 'pointer',
+              padding: '4px 14px', font: 'inherit', fontSize: '12px', flex: '0 0 auto',
+            } }, '立即更新'),
+        ] : isDone ? [
+          el('button', { key: 'rst', type: 'button', onClick: function () { try { call('restart') } catch (e) { /* noop */ } },
+            style: {
+              border: '1px solid rgba(255,255,255,.85)', borderRadius: '8px',
+              background: 'rgba(255,255,255,.14)', color: '#fff', cursor: 'pointer',
+              padding: '4px 14px', font: 'inherit', fontSize: '12px', flex: '0 0 auto',
+            } }, '重启 dsh web'),
+        ] : (active || isErr) ? [
+          el('button', { key: 'retry', type: 'button', onClick: startUpdate,
+            style: {
+              border: '1px solid rgba(255,255,255,.85)', borderRadius: '8px',
+              background: 'rgba(255,255,255,.14)', color: '#fff', cursor: 'pointer',
+              padding: '4px 14px', font: 'inherit', fontSize: '12px', flex: '0 0 auto',
+            } }, '重试'),
+        ] : null,
+        (active || !prompt) ? null : el('button', {
+          key: 'x', type: 'button', onClick: function () { dismiss(info.latest) },
+          title: '关闭（有新版本时会再次提示）',
+          style: {
+            border: 'none', background: 'transparent', color: '#fff', cursor: 'pointer',
+            fontSize: '18px', lineHeight: '1', padding: '0 6px', flex: '0 0 auto',
+            opacity: '.85',
+          },
+        }, '×'),
+        el(ReleaseNotesModal, { key: 'notesmodal', open: showNotes, onClose: function () { setShowNotes(false) } }),
+      ])
+    }
+
+    // -------------------------------------------- dsh release notes (changelog)
+
+    // Minimal Markdown-lite → HTML renderer for the changelog modal. The
+    // GitHub release body is a mix of Markdown (`* item`, `### heading`,
+    // `[text](url)`, `**bold**`, `` `code` ``, `---`) and inline HTML
+    // (`<h3>`, `<br>`). Renders the common subset cleanly and SANITIZES all
+    // output: HTML is escaped except whitelisted block tags, and only
+    // http/https/mailto links survive. No dependency on dsh internal modules.
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+    }
+    // Inline pass: `code`, **bold**, *italics*, [text](url) after code spans
+    // are protected.
+    function mdInline(s) {
+      var out = ''
+      var i = 0
+      var m
+      var codeRe = /`([^`]*)`/g
+      var last = 0
+      while ((m = codeRe.exec(s)) !== null) {
+        out += inlineRest(s.slice(last, m.index))
+        out += '<code>' + escapeHtml(m[1]) + '</code>'
+        last = m.index + m[0].length
+      }
+      out += inlineRest(s.slice(last))
+      return out
+    }
+    function inlineRest(s) {
+      return escapeHtml(s)
+        // [text](url) — only http(s) / mailto
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g,
+          function (_, t, u) { return '<a href="' + escapeHtml(u) + '" target="_blank" rel="noreferrer">' + mdInlineLite(t) + '</a>' })
+        // **bold**
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        // *italic*
+        .replace(/(^|[^*])\*([^*\s][^*]*?)\*([^*]|$)/g, '$1<em>$2</em>$3')
+        // `` `code` `` already handled by caller
+    }
+    // tiny helper used inside link-text (no recursion into links)
+    function mdInlineLite(s) {
+      return escapeHtml(String(s == null ? '' : s).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>'))
+    }
+
+    // Block pass: split into lines, group bullets/ordered lists, headings,
+    // horizontal rules, and paragraphs. Inline HTML block tags in the source
+    // (<h3> etc.) are extracted and re-emitted as proper headings.
+    function mdToHtml(src) {
+      var text = String(src == null ? '' : src)
+      // normalize CRLF
+      text = text.replace(/\r\n?/g, '\n')
+      // convert inline HTML headings `<h3>title</h3>` to markdown headings
+      text = text.replace(/<\s*h([1-6])\s*>(.*?)<\s*\/\s*h\1\s*>/gi,
+        function (_, n, c) { return Array(Number(n) + 1).join('#') + ' ' + c.trim() })
+      // convert `<br>` / `<br/>` to line breaks
+      text = text.replace(/<\s*br\s*\/?\s*>/gi, '\n')
+      // strip any other HTML tags (keep their inner text)
+      text = text.replace(/<[^>]+>/g, '')
+      // unescape common entities left behind
+      text = text.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+
+      var lines = text.split('\n').map(function (l) { return l.replace(/\s+$/, '') })
+      // drop language-switcher lines like `[中文](#cn) | [English](#en)`
+      // (fragment links are not useful in a modal)
+      lines = lines.filter(function (l) {
+        return !/^\s*(\[[^\]]+\]\(#[^)]*\)\s*(\|\s*)?)+\s*$/.test(l)
+      })
+      var html = ''
+      var i = 0
+      function pushBlock(b) { if (b.length) html += b + '\n' }
+      while (i < lines.length) {
+        var line = lines[i]
+        // skip blank lines (paragraph separators)
+        if (/^\s*$/.test(line)) { i++; continue }
+        // horizontal rule
+        if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { pushBlock('<hr>'); i++; continue }
+        // heading
+        var hm = /^(#{1,6})\s+(.*)$/.exec(line)
+        if (hm) {
+          var n = hm[1].length
+          pushBlock('<h' + n + '>' + mdInline(hm[2]) + '</h' + n + '>')
+          i++; continue
+        }
+        // bullet list: collect consecutive `* ` / `- ` / `+ `
+        if (/^\s*[-*+]\s+/.test(line)) {
+          var items = []
+          while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+            items.push('<li>' + mdInline(lines[i].replace(/^\s*[-*+]\s+/, '')) + '</li>')
+            i++
+          }
+          pushBlock('<ul>' + items.join('') + '</ul>')
+          continue
+        }
+        // ordered list
+        if (/^\s*\d+[.)]\s+/.test(line)) {
+          var oitems = []
+          while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
+            oitems.push('<li>' + mdInline(lines[i].replace(/^\s*\d+[.)]\s+/, '')) + '</li>')
+            i++
+          }
+          pushBlock('<ol>' + oitems.join('') + '</ol>')
+          continue
+        }
+        // paragraph: collect until blank line (or a new block starts)
+        var para = []
+        while (i < lines.length && !/^\s*$/.test(lines[i])) { para.push(lines[i]); i++ }
+        pushBlock('<p>' + para.map(function (l) { return mdInline(l) }).join('<br>') + '</p>')
+      }
+      return html.trim()
+    }
+
+    // Modal showing the latest dsh release notes (fetched from the exe bridge
+    // dshReleaseNotes, which reads the GitHub release body). Rendered inline so
+    // both the banner and the settings section can open it.
+    function ReleaseNotesModal(props) {
+      var open = props.open
+      var [notes, setNotes] = useState(null)   // {ok, version, title, body, url, error}
+      var [loading, setLoading] = useState(false)
+      useEffect(function () {
+        if (!open) { setNotes(null); return }
+        setLoading(true)
+        callJson('dshReleaseNotes').then(function (v) {
+          setLoading(false)
+          setNotes(v || { ok: false, error: '无响应' })
+        }, function () {
+          setLoading(false)
+          setNotes({ ok: false, error: '无响应' })
+        })
+      }, [open])
+      if (!open) return null
+      return el('div', { style: { position: 'fixed', inset: '0', zIndex: '2147482500', display: 'flex', alignItems: 'center', justifyContent: 'center', font: 'inherit' } }, [
+        el('div', { key: 'mask', onClick: props.onClose,
+          style: { position: 'absolute', inset: '0', background: 'var(--dsw-alias-bg-mask-1, rgba(0,0,0,0.24))', backdropFilter: 'var(--dsw-mask-blur, blur(2px))' } }),
+        el('div', { key: 'panel', style: {
+          position: 'relative', zIndex: '1', width: '560px', maxWidth: 'calc(100vw - 48px)',
+          maxHeight: 'calc(100vh - 96px)', display: 'flex', flexDirection: 'column',
+          borderRadius: '16px', background: 'var(--dsw-alias-bg-layer-2, #fff)',
+          boxShadow: 'var(--dsw-shadow-lv3, 0 8px 40px rgba(0,0,0,0.25))',
+          border: '1px solid var(--dsw-alias-border-default, #e8e8e8)',
+          color: 'var(--dsw-alias-label-primary, #202124)', fontSize: '13px', lineHeight: '20px', overflow: 'hidden' } }, [
+          el('div', { key: 'head', style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '14px 18px', borderBottom: '1px solid var(--dsw-alias-border-default, #e8e8e8)' } }, [
+            el('strong', { key: 't', style: { fontSize: '15px', flex: '1 1 auto', minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+              loading ? '正在获取更新日志…' : 'dsh 更新日志' + (notes && notes.version ? '（' + notes.version + '）' : '')),
+            el('button', { key: 'x', type: 'button', onClick: props.onClose,
+              style: { border: 'none', background: 'transparent', color: 'var(--dsw-alias-label-tertiary, #6b7684)', cursor: 'pointer', fontSize: '18px', lineHeight: '1', padding: '0 6px', font: 'inherit' } }, '✕'),
+          ]),
+          el('div', { key: 'body', style: { overflowY: 'auto', padding: '14px 18px', fontSize: '13px', lineHeight: '22px', wordBreak: 'break-word', flex: '1 1 auto', minHeight: '0' } },
+            loading
+              ? '加载中…'
+              : !notes || !notes.ok
+                ? el('span', { key: 'e', style: { color: '#b45409' } }, '获取更新日志失败：' + ((notes && notes.error) || '未知错误'))
+                : el('div', {
+                    key: 'md',
+                    className: 'dshd-md',
+                    // Rendered Markdown (mdToHtml sanitizes all output).
+                    dangerouslySetInnerHTML: { __html: mdToHtml(notes.body || '（无更新说明）') },
+                    style: { fontSize: '13px', lineHeight: '22px' },
+                  })),
+          el('div', { key: 'foot', style: { display: 'flex', gap: '8px', alignItems: 'center', justifyContent: 'flex-end', padding: '12px 18px', borderTop: '1px solid var(--dsw-alias-border-default, #e8e8e8)' } }, [
+            notes && notes.url
+              ? el('button', { key: 'gh', type: 'button', onClick: function () { openExternalRepo(notes.url) }, style: BTN2 }, '打开发布页')
+              : null,
+            el('button', { key: 'ok', type: 'button', onClick: props.onClose, style: BTN2 }, '关闭'),
+          ]),
+        ]),
+      ])
+    }
+
     var overlayRoot = null
     function ensureOverlay() {
       try {
@@ -1439,6 +1741,12 @@ window.__ModuleLoader__.load({
         document.body.appendChild(el2)
         var bannerRoot = createRoot(el2)
         bannerRoot.render(el(VersionBanner, {}))
+        // fourth root: dsh update prompt banner (independent, always mounted)
+        var el3 = document.createElement('div')
+        el3.id = 'dshdesktop-dsh-update-banner'
+        document.body.appendChild(el3)
+        var dshBannerRoot = createRoot(el3)
+        dshBannerRoot.render(el(DshUpdateBanner, {}))
       } catch (e) { LOG('overlay mount failed ' + e) }
     }
 
@@ -1469,6 +1777,16 @@ window.__ModuleLoader__.load({
           '.dshd-btn:hover{transform:scale(1.04);background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.05))}' +
           '.dshd-btn:active{transform:scale(.97);background:var(--dsw-alias-interactive-bg-active,rgba(0,0,0,.10))}' +
           '.dshd-btn:disabled{opacity:.55;cursor:not-allowed;transform:none}' +
+          // Rendered release-notes Markdown: headings, lists, code, links, hr.
+          '.dshd-md{color:var(--dsw-alias-label-primary,#202124)}' +
+          '.dshd-md p{margin:6px 0}' +
+          '.dshd-md h1,.dshd-md h2,.dshd-md h3,.dshd-md h4{margin:14px 0 6px;line-height:1.5;font-weight:600}' +
+          '.dshd-md h1{font-size:18px}.dshd-md h2{font-size:16px}.dshd-md h3{font-size:14px}.dshd-md h4{font-size:13px}' +
+          '.dshd-md ul,.dshd-md ol{margin:6px 0;padding-left:22px}' +
+          '.dshd-md li{margin:3px 0}' +
+          '.dshd-md code{font-family:var(--ds-font-family-code,Consolas,monospace);background:var(--dsw-alias-markdown-code-block,rgba(0,0,0,.06));border-radius:4px;padding:1px 5px;font-size:12px}' +
+          '.dshd-md a{color:var(--dsw-alias-accent-strong,#4d6bfe);text-decoration:underline}' +
+          '.dshd-md hr{border:none;border-top:1px solid var(--dsw-alias-border-default,#e8e8e8);margin:12px 0}' +
           '[class*="footerActions"]{flex-direction:column}'
         document.head.appendChild(st)
       } catch (e) { /* best effort */ }
@@ -1521,6 +1839,11 @@ window.__ModuleLoader__.load({
       var editing = false, setEditing = null
       var form = null, setForm = null
       var saveMsg = null, setSaveMsg = null
+      var dshVer = null, setDshVer = null       // {current, latest, hasUpdate, source, ok, error}
+      var dshChk = false, setDshChk = null      // forcing an update check
+      var dshProg = null, setDshProg = null     // {phase, message} during/after install
+      var dshBusy = false, setDshBusy = null    // an update install is running
+      var showNotes = false, setShowNotes = null // dsh changelog modal
       try {
         var a = useState(null); about = a[0]; setAbout = a[1]
         var c = useState(null); config = c[0]; setConfig = c[1]
@@ -1529,6 +1852,11 @@ window.__ModuleLoader__.load({
         var ed = useState(false); editing = ed[0]; setEditing = ed[1]
         var fm = useState(null); form = fm[0]; setForm = fm[1]
         var sm = useState(null); saveMsg = sm[0]; setSaveMsg = sm[1]
+        var dv = useState(null); dshVer = dv[0]; setDshVer = dv[1]
+        var dc = useState(false); dshChk = dc[0]; setDshChk = dc[1]
+        var dp = useState(null); dshProg = dp[0]; setDshProg = dp[1]
+        var db = useState(false); dshBusy = db[0]; setDshBusy = db[1]
+        var sn = useState(false); showNotes = sn[0]; setShowNotes = sn[1]
       } catch (e) {
         hooksOk = false
         LOG('hooks unavailable: ' + e)
@@ -1539,7 +1867,30 @@ window.__ModuleLoader__.load({
           LOG('section mounted, loading about/config')
           callJson('getAbout').then(function (v) { setAbout(v) })
           callJson('getConfig').then(function (v) { setConfig(v) })
+          // dsh update info: prefer the exe's startup-warmup cache (force=0)
+          callJson('dshVersion', '0').then(function (v) { if (v) setDshVer(v) })
         }, [])
+        // Poll dsh update install progress while one is running.
+        useEffect(function () {
+          if (!dshBusy) return
+          var stopped = false
+          var timer = setInterval(function () {
+            callJson('dshUpdateProgress').then(function (v) {
+              if (stopped) return
+              if (v) setDshProg(v)
+              if (v && (v.phase === 'done' || v.phase === 'error')) {
+                clearInterval(timer)
+                setDshBusy(false)
+                if (v.phase === 'done') {
+                  callJson('dshVersion', '1').then(function (nv) { if (!stopped && nv) setDshVer(nv) })
+                }
+                // 成功后稍等片刻再清掉结果行（回落到“已是最新”），失败则保留以便重试。
+                setTimeout(function () { if (!stopped) setDshProg(null) }, v.phase === 'done' ? 6000 : 20000)
+              }
+            })
+          }, 800)
+          return function () { stopped = true; clearInterval(timer) }
+        }, [dshBusy])
         // Escape closes the config modal
         useEffect(function () {
           if (!editing) return
@@ -1547,6 +1898,30 @@ window.__ModuleLoader__.load({
           document.addEventListener('keydown', onKey)
           return function () { document.removeEventListener('keydown', onKey) }
         }, [editing])
+      }
+
+      function checkDshVersion() {
+        if (!hooksOk) return
+        setDshChk(true)
+        callJson('dshVersion', '1').then(function (v) {
+          setDshChk(false)
+          if (v) setDshVer(v)
+        }, function () {
+          setDshChk(false)
+          if (!dshVer) setDshVer({ ok: false, error: '无响应' })
+        })
+      }
+
+      function startDshUpdate() {
+        if (!hooksOk) return
+        setDshBusy(true)
+        setDshProg({ phase: 'installing', message: '正在执行 npm install -g @deepseek-ai/dsh@latest …' })
+        callJson('updateDsh').then(function (r) {
+          if (!r || !r.started) {
+            setDshBusy(false)
+            setDshProg({ phase: 'error', message: (r && r.error) || '更新启动失败' })
+          }
+        })
       }
 
       function checkUpdate() {
@@ -1724,6 +2099,57 @@ window.__ModuleLoader__.load({
             el('span', { key: 'vv', style: { fontWeight: 600 } }, (about && about.version) ? about.version : '…'),
             updateArea,
           ]),
+          // dsh 版本 + 更新管理：当前版本、最新版本、检查/更新按钮、进度。
+          el('div', { key: 'dshrow', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } }, [
+            el('span', { key: 'dk', style: Object.assign({}, MUTED2, { flex: '0 0 88px' }) }, 'dsh 版本'),
+            el('span', { key: 'dv', style: { fontWeight: 600, width: 'auto' } },
+              dshVer ? (dshVer.current ? ('v' + dshVer.current) : '未安装本地 dsh') : '…'),
+            // dsh update controls: check / update / progress / result
+            (function () {
+              if (dshChk) {
+                return el('span', { key: 'dc', style: { display: 'inline-flex', gap: '6px', alignItems: 'center', color: 'var(--dsw-alias-text-muted,#8a8f98)' } }, [
+                  el('span', { key: 'sp', className: 'dshd-spinner' }),
+                  '检查中…',
+                ])
+              }
+              if (dshBusy || (dshProg && dshProg.phase === 'installing')) {
+                return el('span', { key: 'dp', style: { display: 'inline-flex', gap: '6px', alignItems: 'center', color: 'var(--dsw-alias-text-muted,#8a8f98)' } }, [
+                  el('span', { key: 'sp', className: 'dshd-spinner' }),
+                  (dshProg && dshProg.message) || '更新中…',
+                ])
+              }
+              if (dshProg && (dshProg.phase === 'done' || dshProg.phase === 'error')) {
+                var okDone = dshProg.phase === 'done'
+                return el('span', { key: 'pr', style: { display: 'inline-flex', gap: '8px', alignItems: 'center' } }, [
+                  el('span', { key: 't', style: { fontSize: '12px', color: okDone ? '#1f9d55' : '#b45409' } },
+                    okDone ? '已更新到 v' + ((dshVer && dshVer.latest) || '?') + '，重启生效' : ('更新失败：' + (dshProg.message || '未知错误'))),
+                  okDone
+                    ? el('button', { key: 'rst', type: 'button', style: BTN2, onClick: function () { try { call('restart') } catch (e) { /* noop */ } } }, '重启 dsh web')
+                    : el('button', { key: 'retry', type: 'button', style: BTN2, onClick: startDshUpdate }, '重试'),
+                ])
+              }
+              if (dshVer && dshVer.hasUpdate) {
+                return el('span', { key: 'du', style: { display: 'inline-flex', gap: '8px', alignItems: 'center' } }, [
+                  el('span', { key: 'txt', style: { fontSize: '12px', color: '#b45409' } }, '有新版本 v' + (dshVer.latest || '?') + ' 可更新'),
+                  el('button', { key: 'go', type: 'button', style: Object.assign({}, BTN2, { borderColor: '#1f9d55', color: '#1f9d55' }), onClick: startDshUpdate }, '更新 dsh'),
+                  el('button', { key: 'notes', type: 'button', style: BTN2, onClick: function () { setShowNotes(true) } }, '查看更新内容'),
+                  el('button', { key: 'chk', type: 'button', style: BTN2, onClick: checkDshVersion }, '检查更新'),
+                ])
+              }
+              if (dshVer && dshVer.ok) {
+                return el('span', { key: 'ok', style: { display: 'inline-flex', gap: '8px', alignItems: 'center' } }, [
+                  el('span', { key: 'txt', style: MUTED2 }, '已是最新' + (dshVer.latest ? '（v' + dshVer.latest + '）' : '')),
+                  el('button', { key: 'notes', type: 'button', style: BTN2, onClick: function () { setShowNotes(true) } }, '查看更新内容'),
+                  el('button', { key: 'chk', type: 'button', style: BTN2, onClick: checkDshVersion }, '检查更新'),
+                ])
+              }
+              return el('span', { key: 'err', style: { display: 'inline-flex', gap: '8px', alignItems: 'center' } }, [
+                el('span', { key: 't', style: { fontSize: '12px', color: '#b45409' } },
+                  (dshVer && dshVer.error) ? ('检查失败：' + dshVer.error) : '—'),
+                el('button', { key: 'chk', type: 'button', style: BTN2, onClick: checkDshVersion }, '检查更新'),
+              ])
+            })(),
+          ]),
           el('div', { key: 'auth', style: { display: 'flex', gap: '8px', alignItems: 'baseline' } }, [
             el('span', { key: 'k', style: Object.assign({}, MUTED2, { flex: '0 0 88px' }) }, '作者'),
             el('span', { key: 'v' }, 'Ackow'),
@@ -1743,6 +2169,7 @@ window.__ModuleLoader__.load({
           saveMsg ? el('div', { key: 'msg', style: Object.assign({}, MUTED2, { fontSize: '12px' }) }, saveMsg) : null,
         ]),
         configModal,
+        el(ReleaseNotesModal, { key: 'notesmodal', open: !!showNotes, onClose: function () { setShowNotes(false) } }),
       ])
     }
 
